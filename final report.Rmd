@@ -48,18 +48,18 @@ After both crises, some regions in the United States demonstrated remarkable res
 
 # Data 
 
-## Data Sources
-## Data Cleaning
-## EDA
+### Data Sources
+### Data Cleaning
+### EDA
 
 # Models
-## Linear model
-## Linear model with backwards stepwise variable selection
-## LASSO 
-## Relaxed LASSO
-## Random forest
-## Boosting 
-## Deep learning
+### Linear model
+### Linear model with backwards stepwise variable selection
+### LASSO 
+### Relaxed LASSO
+### Random forest
+### Boosting 
+### Deep learning
 
 
 # Summary
