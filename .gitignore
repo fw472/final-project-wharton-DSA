@@ -1,0 +1,6 @@
+.Renviron
+raw_data/
+.DS_Store
+.Rhistory
+.RData
+.Rproj.user/
