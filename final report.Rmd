@@ -1,0 +1,68 @@
+---
+title: "Bouncing Back: Predicting an Economy’s Recovery"
+author:
+- Fiona Wu
+- Andrew Sergeyev
+- Lucy Zhou
+- Sasha Kourakin
+- Hejia Jiang
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, results = "hide", fig.width=8, fig.height=4)
+options(scipen = 0, digits = 3)  # controls base R output
+# check if you have ISLR package, if not, install it
+if(!require('pacman')) {install.packages('pacman')}
+pacman::p_load(ISLR, readxl, tidyverse, magrittr, dplyr, ggplot2, ggrepel)
+```
+
+\pagebreak
+
+#  Abstract
+
+
+# Introduction 
+
+In 2008, the United States experienced the Great Recession, one of the most severe economic downturns since the Great Depression. The collapse of the housing market and widespread job losses affected communities across the country. Unemployment rates doubled, and businesses struggled as the stock market declined. The S&P 500 fell by 38.49% during the 2008 calendar year, marking its worst annual percentage loss in history.
+
+Comparably, in 2019, the COVID-19 pandemic triggered another major economic disruption, resulting in widespread business closures, job losses, and significant changes to local economies. Following the pandemic, inflation became one of the largest economic challenges, driven by supply chain disruptions, increased consumer demand, and rising energy costs. In 2022, U.S. inflation reached 9.1%, the highest annual increase since 1981, causing prices for essential goods, including oil, housing, and household supplies, to rise substantially.
+
+After both crises, some regions in the United States demonstrated remarkable resilience, quickly rebuilding their economies and improving living conditions. In contrast, others remained trapped in cycles of economic hardship. This raises an important question: what factors determine whether a county can bounce back after a major crisis?
+
+# Data 
+
+## Data Sources
+## Data Cleaning
+## EDA
+
+# Models
+## Linear model
+## Linear model with backwards stepwise variable selection
+## LASSO 
+## Relaxed LASSO
+## Random forest
+## Boosting 
+## Deep learning
+
+
+# Summary
+
+# Appendix
+
