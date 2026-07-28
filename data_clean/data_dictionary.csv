@@ -1,0 +1,86 @@
+dataset,position,variable,storage_type,group,description,missing_count,nonmissing_count
+county_spine_clean,1,fips,character,identifier,Five-character county FIPS code,0,3225
+county_spine_clean,2,county_name,character,identifier,County or county-equivalent name and state abbreviation,0,3225
+county_spine_clean,3,peak_year_2008,numeric,great_recession_outcome,Year of the pre-crisis employment peak,7,3218
+county_spine_clean,4,peak_employment_2008,numeric,great_recession_outcome,Employment at the pre-crisis peak,7,3218
+county_spine_clean,5,trough_year_2008,numeric,great_recession_outcome,Year of the post-peak employment trough,7,3218
+county_spine_clean,6,trough_employment_2008,numeric,great_recession_outcome,Employment at the post-peak trough,7,3218
+county_spine_clean,7,recovery_employment_2008,numeric,great_recession_outcome,Mean employment two and three years after the trough,10,3215
+county_spine_clean,8,n_recovery_years_2008,numeric,great_recession_outcome,Number of post-trough years used in recovery employment,10,3215
+county_spine_clean,9,recovery_ratio_2008,numeric,great_recession_outcome,Recovery employment divided by peak employment,10,3215
+county_spine_clean,10,flag_tiny_base_2008,logical,great_recession_outcome,"Peak employment was below 1,000",7,3218
+county_spine_clean,11,flag_implausible_2008,logical,great_recession_outcome,Recovery ratio was below 0.3 or above 2.5,7,3218
+county_spine_clean,12,never_recovered_2008,logical,great_recession_outcome,Employment never exceeded its pre-crisis peak through 2025,7,3218
+county_spine_clean,13,poverty_rate_2007,numeric,great_recession_baseline,Population below poverty line (percent),96,3129
+county_spine_clean,14,median_hh_income_2007,numeric,great_recession_baseline,Median household income (US dollars),96,3129
+county_spine_clean,15,total_population_2007,numeric,great_recession_baseline,Resident population,94,3131
+county_spine_clean,16,rucc_2003_2007,numeric,great_recession_baseline,USDA rural-urban continuum code,96,3129
+county_spine_clean,17,population_density_2007,numeric,great_recession_baseline,Residents per square mile,95,3130
+county_spine_clean,18,proprietor_share_2007,numeric,great_recession_baseline,Proprietor employment as a proportion of employment,146,3079
+county_spine_clean,19,net_migration_rate_2007,numeric,great_recession_baseline,"Net migration per 1,000 residents",99,3126
+county_spine_clean,20,pct_hs_plus_2007,numeric,great_recession_baseline,Adults with high school education or higher (percent),2445,780
+county_spine_clean,21,pct_bachelors_plus_2007,numeric,great_recession_baseline,Adults with bachelor's education or higher (percent),2445,780
+county_spine_clean,22,birth_rate_2007,numeric,great_recession_baseline,"Births per 1,000 residents",94,3131
+county_spine_clean,23,wealth_band_2008,factor,great_recession_baseline,County median-household-income tercile,96,3129
+county_spine_clean,24,peak_year_covid,numeric,covid_outcome,Year of the pre-crisis employment peak,5,3220
+county_spine_clean,25,peak_employment_covid,numeric,covid_outcome,Employment at the pre-crisis peak,5,3220
+county_spine_clean,26,trough_year_covid,numeric,covid_outcome,Year of the post-peak employment trough,5,3220
+county_spine_clean,27,trough_employment_covid,numeric,covid_outcome,Employment at the post-peak trough,5,3220
+county_spine_clean,28,recovery_employment_covid,numeric,covid_outcome,Mean employment two and three years after the trough,6,3219
+county_spine_clean,29,n_recovery_years_covid,numeric,covid_outcome,Number of post-trough years used in recovery employment,6,3219
+county_spine_clean,30,recovery_ratio_covid,numeric,covid_outcome,Recovery employment divided by peak employment,6,3219
+county_spine_clean,31,flag_tiny_base_covid,logical,covid_outcome,"Peak employment was below 1,000",5,3220
+county_spine_clean,32,flag_implausible_covid,logical,covid_outcome,Recovery ratio was below 0.3 or above 2.5,5,3220
+county_spine_clean,33,never_recovered_covid,logical,covid_outcome,Employment never exceeded its pre-crisis peak through 2025,5,3220
+county_spine_clean,34,poverty_rate_2019,numeric,covid_baseline,Population below poverty line (percent),92,3133
+county_spine_clean,35,median_hh_income_2019,numeric,covid_baseline,Median household income (US dollars),92,3133
+county_spine_clean,36,total_population_2019,numeric,covid_baseline,Resident population,92,3133
+county_spine_clean,37,rucc_2013_2019,numeric,covid_baseline,USDA rural-urban continuum code,16,3209
+county_spine_clean,38,population_density_2019,numeric,covid_baseline,Residents per square mile,93,3132
+county_spine_clean,39,proprietor_share_2019,numeric,covid_baseline,Proprietor employment as a proportion of employment,144,3081
+county_spine_clean,40,net_migration_rate_2019,numeric,covid_baseline,"Net migration per 1,000 residents",153,3072
+county_spine_clean,41,pct_hs_plus_2019,numeric,covid_baseline,Adults with high school education or higher (percent),2412,813
+county_spine_clean,42,pct_bachelors_plus_2019,numeric,covid_baseline,Adults with bachelor's education or higher (percent),2412,813
+county_spine_clean,43,birth_rate_2019,numeric,covid_baseline,"Births per 1,000 residents",92,3133
+county_spine_clean,44,wealth_band_covid,factor,covid_baseline,County median-household-income tercile,92,3133
+state_spine_clean,1,state_fips,character,identifier,Two-character state FIPS code,0,51
+state_spine_clean,2,state_abbr,character,identifier,Two-letter postal abbreviation,0,51
+state_spine_clean,3,state_name,character,identifier,State name,0,51
+state_spine_clean,4,peak_year_2008,numeric,great_recession_outcome,Year of the pre-crisis employment peak,0,51
+state_spine_clean,5,peak_employment_2008,numeric,great_recession_outcome,Employment at the pre-crisis peak,0,51
+state_spine_clean,6,trough_year_2008,numeric,great_recession_outcome,Year of the post-peak employment trough,0,51
+state_spine_clean,7,trough_employment_2008,numeric,great_recession_outcome,Employment at the post-peak trough,0,51
+state_spine_clean,8,recovery_employment_2008,numeric,great_recession_outcome,Mean employment two and three years after the trough,0,51
+state_spine_clean,9,n_recovery_years_2008,numeric,great_recession_outcome,Number of post-trough years used in recovery employment,0,51
+state_spine_clean,10,recovery_ratio_2008,numeric,great_recession_outcome,Recovery employment divided by peak employment,0,51
+state_spine_clean,11,flag_implausible_2008,logical,great_recession_outcome,Recovery ratio was below 0.3 or above 2.5,0,51
+state_spine_clean,12,never_recovered_2008,logical,great_recession_outcome,Employment never exceeded its pre-crisis peak through 2025,0,51
+state_spine_clean,13,poverty_rate_2007,numeric,great_recession_baseline,Population below poverty line (percent),0,51
+state_spine_clean,14,median_hh_income_2007,numeric,great_recession_baseline,Median household income (US dollars),0,51
+state_spine_clean,15,total_population_2007,numeric,great_recession_baseline,Resident population,0,51
+state_spine_clean,16,pct_rural_2007,numeric,great_recession_baseline,Rural population share (percent),0,51
+state_spine_clean,17,population_density_2007,numeric,great_recession_baseline,Residents per square mile,0,51
+state_spine_clean,18,proprietor_share_2007,numeric,great_recession_baseline,Proprietor employment as a proportion of employment,0,51
+state_spine_clean,19,net_migration_rate_2007,numeric,great_recession_baseline,"Net migration per 1,000 residents",0,51
+state_spine_clean,20,pct_hs_plus_2007,numeric,great_recession_baseline,Adults with high school education or higher (percent),0,51
+state_spine_clean,21,pct_bachelors_plus_2007,numeric,great_recession_baseline,Adults with bachelor's education or higher (percent),0,51
+state_spine_clean,22,birth_rate_2007,numeric,great_recession_baseline,"Births per 1,000 residents",0,51
+state_spine_clean,23,peak_year_covid,numeric,covid_outcome,Year of the pre-crisis employment peak,0,51
+state_spine_clean,24,peak_employment_covid,numeric,covid_outcome,Employment at the pre-crisis peak,0,51
+state_spine_clean,25,trough_year_covid,numeric,covid_outcome,Year of the post-peak employment trough,0,51
+state_spine_clean,26,trough_employment_covid,numeric,covid_outcome,Employment at the post-peak trough,0,51
+state_spine_clean,27,recovery_employment_covid,numeric,covid_outcome,Mean employment two and three years after the trough,0,51
+state_spine_clean,28,n_recovery_years_covid,numeric,covid_outcome,Number of post-trough years used in recovery employment,0,51
+state_spine_clean,29,recovery_ratio_covid,numeric,covid_outcome,Recovery employment divided by peak employment,0,51
+state_spine_clean,30,flag_implausible_covid,logical,covid_outcome,Recovery ratio was below 0.3 or above 2.5,0,51
+state_spine_clean,31,never_recovered_covid,logical,covid_outcome,Employment never exceeded its pre-crisis peak through 2025,0,51
+state_spine_clean,32,poverty_rate_2019,numeric,covid_baseline,Population below poverty line (percent),0,51
+state_spine_clean,33,median_hh_income_2019,numeric,covid_baseline,Median household income (US dollars),0,51
+state_spine_clean,34,total_population_2019,numeric,covid_baseline,Resident population,0,51
+state_spine_clean,35,pct_rural_2019,numeric,covid_baseline,Rural population share (percent),0,51
+state_spine_clean,36,population_density_2019,numeric,covid_baseline,Residents per square mile,0,51
+state_spine_clean,37,proprietor_share_2019,numeric,covid_baseline,Proprietor employment as a proportion of employment,0,51
+state_spine_clean,38,net_migration_rate_2019,numeric,covid_baseline,"Net migration per 1,000 residents",0,51
+state_spine_clean,39,pct_hs_plus_2019,numeric,covid_baseline,Adults with high school education or higher (percent),0,51
+state_spine_clean,40,pct_bachelors_plus_2019,numeric,covid_baseline,Adults with bachelor's education or higher (percent),0,51
+state_spine_clean,41,birth_rate_2019,numeric,covid_baseline,"Births per 1,000 residents",0,51
