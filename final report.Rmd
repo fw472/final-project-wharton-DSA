@@ -48,6 +48,15 @@ After both crises, some regions in the United States demonstrated remarkable res
 
 # Data 
 
+**************```{r}
+***************data <- read_csv("spine_data.csv", show_col_types = FALSE)
+**data
+******************```
+
+**************```{r}
+***************data2 <- read_csv("state_spine.csv", show_col_types = FALSE)
+***************data2
+```
 ### Data Sources
 ### Data Cleaning
 ### EDA
