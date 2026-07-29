@@ -83,7 +83,7 @@ features_2008 <- c(
 )
 ```
 ## Regressions
-(1, Poverty Rate)
+##1, Poverty Rate
 
 ```{r}
 ggplot(county_data,
@@ -108,7 +108,7 @@ poverty_rate <- lm(
 summary(poverty_rate)
 ```
 
-(2, Median Income)
+##2, Median Income
 
 ```{r}
 ggplot(county_data,
@@ -133,7 +133,7 @@ median_income <- lm(
 summary(median_income)
 ```
 
-(3, Net Migration Rate)
+##3, Net Migration
 
 ```{r}
 ggplot(county_data,
@@ -158,27 +158,35 @@ net_migration <- lm(
 summary(net_migration)
 ```
 
-(4, Population Density)
+```{r}
+#Population is skewed right
+county_data <- county_data %>%
+  mutate(
+    log_population_density_2007 = log1p(population_density_2007)
+  )
+```
+
+##4, Log Population Density
 
 ```{r}
 ggplot(county_data,
-       aes(x = population_density_2007,
+       aes(x = log_population_density_2007,
            y = recovery_ratio_2008)) +
   geom_point(alpha = 0.4) +
   geom_smooth(method = "lm",
               se = TRUE,
               color = "red") +
   labs(
-    x = "Population Density (2007)",
+    x = "Log Population Density (2007)",
     y = "Recovery Ratio (2008)",
-    title = "Recovery Ratio vs Net Migration Rate"
+    title = "Recovery Ratio vs Log Population Density"
   ) +
   theme_minimal()
 
-population_density <- lm(
-  recovery_ratio_2008 ~ population_density_2007,
+log_population_density <- lm(
+  recovery_ratio_2008 ~ log_population_density_2007,
   data = county_data
 )
 
-summary(population_density)
+summary(log_population_density)
 ```
