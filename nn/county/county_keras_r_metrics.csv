@@ -1,0 +1,3 @@
+validation,observations,RMSE,MAE,R_squared,geography,crisis,predictors
+15% holdout,482,0.09593475212964454,0.06862638978581602,0.11601383822709799,County,Great Recession,8
+15% holdout,482,0.04878764686301351,0.03650907223498095,0.3488835814934018,County,COVID-19,8
