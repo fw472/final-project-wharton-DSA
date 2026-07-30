@@ -991,15 +991,17 @@ Band coefficients use a single-hue **sequential** ramp (light->dark),
 since the three bands are ordinal, not an unordered category set.
 
 ```{r fig-wealth-bands, fig.width=10, fig.height=6}
-# Deliberately rebuilds `band_table` rather than reusing the one from the
-# wealthband-fit chunk above: this version recodes crisis to "COVID" and
-# relabels `band` as a display-friendly ordered factor ("Lower third", etc.)
-# for the plot's legend, whereas the earlier `band_table` (still used by the
-# text-table sections above) keeps the plain "covid"/"lower" values those
+# Builds its own display-formatted table (`band_plot_data`) rather than
+# reusing `band_table` from the wealthband-fit chunk above: this one recodes
+# crisis to "COVID" and relabels `band` as a display-friendly ordered factor
+# ("Lower third", etc.) for the plot's legend, whereas `band_table` (used by
+# the text-table sections above) keeps the plain "covid"/"lower" values those
 # sections filter and join on. Same underlying `band_fits`, display-only
-# difference.
+# difference -- kept as a separate object (rather than reassigning
+# `band_table`) so this chunk can no longer shadow the one those earlier
+# sections depend on.
 bands <- c("lower", "middle", "higher")
-band_table <- imap_dfr(band_fits, function(crisis_fits, crisis) {
+band_plot_data <- imap_dfr(band_fits, function(crisis_fits, crisis) {
   imap_dfr(crisis_fits, function(fit, band) {
     s <- summary(fit)$coefficients[studied_z, ]
     as_tibble(s, rownames = "term") %>%
@@ -1011,7 +1013,7 @@ band_table <- imap_dfr(band_fits, function(crisis_fits, crisis) {
          band = factor(band, levels = bands, labels = c("Lower third", "Middle third", "Higher third")))
 
 dodge_w <- 0.6
-p7 <- ggplot(band_table, aes(x = estimate, y = predictor, color = band)) +
+p7 <- ggplot(band_plot_data, aes(x = estimate, y = predictor, color = band)) +
   geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
   geom_errorbar(aes(xmin = ci_low, xmax = ci_high), width = 0.15, linewidth = 0.7,
                 orientation = "y", position = position_dodge(width = dodge_w)) +
