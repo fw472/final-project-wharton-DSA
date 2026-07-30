@@ -703,9 +703,17 @@ relax_covid <- relaxed[["covid"]]
 ### Best gamma and lambda from CV
 
 ```{r relax-best-tuning}
+# NB: relax_2008$lambda.min (top-level) is NOT the lambda that CV jointly
+# selected alongside relax_2008$relaxed$gamma.min -- it's the lambda a
+# plain, non-relaxed cv.glmnet call would have picked. The lambda that is
+# actually jointly optimal with gamma.min lives at
+# relax_2008$relaxed$lambda.min, and it differs from the top-level value in
+# both crises. (relax_2008$lambda.1se and relax_2008$relaxed$lambda.1se are
+# identical in both crises, since gamma.1se = 1 in both -- see the note in
+# relax-coefs below -- so this mismatch only affects the lambda.min columns.)
 tibble(
   crisis = c("2008", "covid"),
-  lambda_min = c(relax_2008$lambda.min, relax_covid$lambda.min),
+  lambda_min = c(relax_2008$relaxed$lambda.min, relax_covid$relaxed$lambda.min),
   gamma_min = c(relax_2008$relaxed$gamma.min, relax_covid$relaxed$gamma.min),
   lambda_1se = c(relax_2008$lambda.1se, relax_covid$lambda.1se),
   gamma_1se = c(relax_2008$relaxed$gamma.1se, relax_covid$relaxed$gamma.1se)
@@ -717,9 +725,15 @@ tibble(
 ```{r relax-coefs}
 relax_coef <- function(res, s, gamma) as.matrix(coef(res, s = s, gamma = gamma))[, 1]
 
-relax_2008_min <- relax_coef(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
+# lambda and gamma must be taken from the SAME selection here: gamma.min was
+# chosen by CV as the best gamma AT relaxed$lambda.min, not at the top-level
+# $lambda.min (which belongs to the plain, gamma-free path and can land on a
+# different lambda -- confirmed different in both crises). Pairing gamma.min
+# with the wrong lambda would evaluate the relaxed fit off the point CV
+# actually selected as jointly optimal.
+relax_2008_min <- relax_coef(relax_2008, relax_2008$relaxed$lambda.min, relax_2008$relaxed$gamma.min)
 relax_2008_1se <- relax_coef(relax_2008, relax_2008$lambda.1se, relax_2008$relaxed$gamma.1se)
-relax_covid_min <- relax_coef(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
+relax_covid_min <- relax_coef(relax_covid, relax_covid$relaxed$lambda.min, relax_covid$relaxed$gamma.min)
 relax_covid_1se <- relax_coef(relax_covid, relax_covid$lambda.1se, relax_covid$relaxed$gamma.1se)
 
 tibble(term = names(relax_2008_min), coef_2008_min = relax_2008_min, coef_2008_1se = relax_2008_1se) %>%
@@ -832,8 +846,11 @@ p1
 # relax_coef() is already defined above (relax-coefs chunk) -- reused here
 # rather than redefined, so there's exactly one copy of this coefficient
 # extractor in the document instead of two functions with identical bodies.
-relax_2008_min <- relax_coef(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
-relax_covid_min <- relax_coef(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
+# Same lambda/gamma pairing rule as the relax-coefs chunk: relaxed$lambda.min
+# paired with relaxed$gamma.min, since those are the jointly-selected pair
+# (the top-level $lambda.min belongs to the plain, gamma-free path).
+relax_2008_min <- relax_coef(relax_2008, relax_2008$relaxed$lambda.min, relax_2008$relaxed$gamma.min)
+relax_covid_min <- relax_coef(relax_covid, relax_covid$relaxed$lambda.min, relax_covid$relaxed$gamma.min)
 
 method_data <- bind_rows(
   ols_ci_table(res_2008, "2008") %>% mutate(method = "OLS"),
