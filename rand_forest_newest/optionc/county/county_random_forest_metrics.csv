@@ -1,0 +1,3 @@
+geography,crisis,validation,observations,predictors,mtry,RMSE,MAE,R_squared,nodesize
+County,Great Recession,20% holdout,643,49,7,0.10910646361254568,0.0723267257221002,0.21011582086351244,5
+County,COVID-19,20% holdout,644,49,24,0.07640257104957829,0.038838307889234834,0.3492339576395479,1
