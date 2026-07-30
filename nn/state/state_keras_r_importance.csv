@@ -1,0 +1,17 @@
+predictor,importance_pct_mse,importance_sd,geography,crisis
+birth_rate,12.946870983607045,NA,State,Great Recession
+log_density,3.870583725887201,NA,State,Great Recession
+log_median_income,8.238407105751453,NA,State,Great Recession
+log_population,8.986634720602924,NA,State,Great Recession
+net_migration_rate,4.505908443921795,NA,State,Great Recession
+poverty_rate,-0.10654082773356617,NA,State,Great Recession
+proprietor_share,0.2730926319561869,NA,State,Great Recession
+rurality,2.6261135346973274,NA,State,Great Recession
+birth_rate,18.632565317090197,NA,State,COVID-19
+log_density,32.84911102083493,NA,State,COVID-19
+log_median_income,11.499972385150336,NA,State,COVID-19
+log_population,9.486492754697103,NA,State,COVID-19
+net_migration_rate,80.4135563386112,NA,State,COVID-19
+poverty_rate,3.7207606752238735,NA,State,COVID-19
+proprietor_share,23.791689893920143,NA,State,COVID-19
+rurality,8.944146903480569,NA,State,COVID-19
