@@ -1,0 +1,409 @@
+---
+title: "Pre-Modeling Diagnostics: County Economic Recovery"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    df-print: kable
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(e1071)   # skewness()
+library(scales)  # percent labels on plots
+
+county <- read_csv("spine_data.csv", show_col_types = FALSE)
+```
+
+This is diagnostics only -- no models, no filtering, no edits to the source
+file. Everything below reads `spine_data.csv` as-is.
+
+## Step 0: Data discovery
+
+**Files found in the project root:** `spine_data.csv` (3,225 rows x 88 cols)
+and `state_spine.csv` (51 rows x 83 cols) -- these are the pipeline's outputs
+(see `pipeline/01-28`) and are what this document uses.
+
+**Also present, NOT used here -- flagging for your attention:**
+`data_clean/county_spine_clean.csv` and `data_clean/state_spine_clean.csv`
+look like a teammate's reformatted copy, but they only have 44/41 columns and
+are **missing `pre_unemployment_*`, `working_age_share_*`, and `pop_trend_*`
+entirely** -- three of the four studied predictors plus a control this brief
+asks about. That means they were exported from an earlier pipeline snapshot
+(before those three were added) and are now stale relative to `spine_data.csv`.
+There's also a `final report.Rmd` in the root authored by the team
+(`Fiona Wu, Andrew Sergeyev, Lucy Zhou, Sasha Kourakin, Hejia Jiang`) plus
+`graphs.R`, `plot_sp500_crash.R`, `figures/` -- unrelated to this diagnostic
+task as far as I can tell, not inspected further. **Worth checking whether
+anyone on the team is writing against the stale `data_clean/` copy.**
+
+### Column mapping (as used below)
+
+```{r step0-mapping}
+mapping <- tribble(
+  ~role, ~`2008 column`, ~`COVID column`,
+  "Outcome", "recovery_ratio_2008", "recovery_ratio_covid",
+  "Studied: self-employment", "proprietor_share_2007", "proprietor_share_2019",
+  "Studied: migration", "net_migration_rate_2007", "net_migration_rate_2019",
+  "Studied: unemployment", "pre_unemployment_2007", "pre_unemployment_2019",
+  "Studied: age structure", "working_age_share_2007", "working_age_share_2019",
+  "Control: income", "median_hh_income_2007", "median_hh_income_2019",
+  "Control: poverty", "poverty_rate_2007", "poverty_rate_2019",
+  "Control: population", "total_population_2007", "total_population_2019",
+  "Control: density", "population_density_2007", "population_density_2019",
+  "Control: RUCC", "rucc_2003_2007", "rucc_2013_2019",
+  "Control: population trend", "pop_trend_2007", "pop_trend_2019"
+)
+mapping
+```
+
+Also present in the file but **not** part of this predictor set (per the
+project's own design-review decisions, see `pipeline/27_predictor_set.R`):
+`birth_rate_2007/2019` (dropped, no theoretical link), `pct_hs_plus_*` /
+`pct_bachelors_plus_*` (education, dropped for coverage), `share_*_2007/2019`
+(industry mix, dropped for coverage), and `wealth_band_2008/covid` (a
+stratification variable, not a model input). This mapping is unambiguous --
+every column the brief names exists with an obvious match, so I'm proceeding
+without stopping for it. The `data_clean/` duplicate above is the one thing
+worth a decision from you.
+
+```{r step0-types}
+county %>%
+  select(all_of(as.character(unlist(mapping[,-1])))) %>%
+  map_chr(~ class(.x)[1]) %>%
+  enframe(name = "column", value = "storage_type")
+```
+
+## Step 1: Outcome distribution
+
+```{r step1-summary}
+outcome_summary <- function(x) {
+  ok <- x[!is.na(x)]
+  tibble(
+    n = length(ok), n_na = sum(is.na(x)), mean = mean(ok), median = median(ok), sd = sd(ok),
+    min = min(ok), max = max(ok),
+    p1 = quantile(ok, .01), p5 = quantile(ok, .05), p25 = quantile(ok, .25),
+    p75 = quantile(ok, .75), p95 = quantile(ok, .95), p99 = quantile(ok, .99),
+    n_zero = sum(ok == 0), n_neg = sum(ok < 0), n_inf = sum(is.infinite(ok)),
+    n_below_1 = sum(ok < 1), share_below_1 = mean(ok < 1),
+    skew_raw = skewness(ok, type = 2), skew_log = skewness(log(ok), type = 2)
+  )
+}
+
+bind_rows(
+  "2008" = outcome_summary(county$recovery_ratio_2008),
+  "covid" = outcome_summary(county$recovery_ratio_covid),
+  .id = "crisis"
+)
+```
+
+
+
+No zeros, negatives, or infinite values in either crisis -- ratios are
+well-formed. NAs are 10 (2008) and 6 (COVID) out of 3,225.
+
+**Two known-quirk populations sit inside the raw distribution below, and they
+matter for reading the extremes tables:**
+
+```{r step1-quirks}
+# Puerto Rico municipios: outcome exists, but every single one is missing
+# total_population and the other US-Census-sourced controls -- they never
+# survive a complete-case filter, but they DO show up in the raw
+# distribution/extremes below.
+n_pr <- sum(substr(county$fips, 1, 2) == "72")
+n_pr_pop_na <- sum(substr(county$fips, 1, 2) == "72" & is.na(county$total_population_2007))
+cat("Puerto Rico municipios in the file:", n_pr, "| of those, missing total_population_2007:", n_pr_pop_na, "\n")
+
+# Alaska borough/census-area boundary changes between 2007 and 2019 produce
+# FIPS codes that exist for one crisis's outcome but not the other -- this is
+# real geography churn (Wrangell-Petersburg split into Wrangell + Petersburg,
+# Skagway-Hoonah-Angoon split into Skagway + Hoonah-Angoon, Valdez-Cordova
+# split into Chugach + Copper River, etc.), not a data error.
+mismatched <- county %>%
+  filter(is.na(recovery_ratio_2008) != is.na(recovery_ratio_covid) |
+           (is.na(recovery_ratio_2008) & is.na(recovery_ratio_covid))) %>%
+  select(fips, county_name, recovery_ratio_2008, recovery_ratio_covid)
+mismatched
+```
+
+All 11 of these mismatched rows are Alaska -- confirms the Alaska-geography
+explanation rather than a join bug.
+
+```{r step1-extremes}
+extremes <- function(data, ratio_col, pop_col, n = 15) {
+  bind_rows(
+    highest = data %>% filter(!is.na(.data[[ratio_col]])) %>% arrange(desc(.data[[ratio_col]])) %>% slice_head(n = n),
+    lowest = data %>% filter(!is.na(.data[[ratio_col]])) %>% arrange(.data[[ratio_col]]) %>% slice_head(n = n),
+    .id = "end"
+  ) %>%
+    transmute(end, county_name, ratio = .data[[ratio_col]], population = .data[[pop_col]],
+              is_puerto_rico = substr(fips, 1, 2) == "72")
+}
+
+extremes(county, "recovery_ratio_2008", "total_population_2007")
+extremes(county, "recovery_ratio_covid", "total_population_2019")
+```
+
+Puerto Rico municipios (`is_puerto_rico`, population always `NA` here) show
+up among the 2008 lows -- they're real recovery-ratio values, just computed
+for places with no US-Census control data to accompany them. Everything else
+in both lists is a real, tiny-population county (Loving County TX pop. 79-169,
+Kenedy County TX pop. 404, several North Dakota oil-boom counties in 2008) --
+extreme ratios driven by a small employment base, not obviously data errors,
+but worth your judgment call on whether `flag_tiny_base_*` should exclude them
+from modeling (`flag_tiny_base_2008` is TRUE for 84 counties, `_covid` for
+121; `flag_implausible_*`, the `<0.3` or `>2.5` check, is TRUE for **zero**
+counties in either crisis -- nothing crosses that harder line).
+
+```{r step1-plots, fig.width=9, fig.height=7}
+plot_data <- county %>%
+  select(recovery_ratio_2008, recovery_ratio_covid) %>%
+  pivot_longer(everything(), names_to = "crisis", values_to = "ratio") %>%
+  filter(!is.na(ratio)) %>%
+  mutate(crisis = recode(crisis, recovery_ratio_2008 = "2008", recovery_ratio_covid = "COVID"))
+
+p_raw <- ggplot(plot_data, aes(ratio)) +
+  geom_histogram(bins = 60, fill = "steelblue") +
+  facet_wrap(~crisis) +
+  labs(title = "Raw recovery ratio", x = "employment(post) / employment(peak)", y = "counties")
+
+p_log <- ggplot(plot_data, aes(log(ratio))) +
+  geom_histogram(bins = 60, fill = "darkorange") +
+  facet_wrap(~crisis) +
+  labs(title = "log(recovery ratio)", x = "log(employment(post) / employment(peak))", y = "counties")
+
+library(patchwork)
+(p_raw / p_log)
+```
+
+**Does the log transform help?** Yes for 2008 (skew 1.31 -> -0.36, closer to
+0 either way but log overshoots slightly negative), and yes more clearly for
+COVID (skew 3.46 -> 0.91 -- COVID's raw distribution is far more skewed than
+2008's, driven by the same tiny-county high-recovery outliers seen in the
+COVID "highest" table above). Log is a real improvement in both cases, bigger
+for COVID. No values look impossible -- everything is a finite, positive
+ratio; the only "artifact" is Puerto Rico rows lacking controls, not the
+ratio itself being wrong.
+
+## Step 2: Missingness
+
+```{r step2-na-table}
+model_cols <- list(
+  "2008" = c("recovery_ratio_2008", mapping$`2008 column`[-1]),
+  "covid" = c("recovery_ratio_covid", mapping$`COVID column`[-1])
+)
+
+na_table <- map2_dfr(model_cols, names(model_cols), function(cols, crisis) {
+  tibble(crisis = crisis, column = cols,
+         n_na = map_int(cols, ~ sum(is.na(county[[.x]]))),
+         pct_na = round(100 * n_na / nrow(county), 2))
+})
+na_table
+```
+
+```{r step2-complete-case}
+complete_2008 <- county %>% filter(if_all(all_of(model_cols[["2008"]]), ~ !is.na(.)))
+complete_covid <- county %>% filter(if_all(all_of(model_cols[["covid"]]), ~ !is.na(.)))
+complete_both <- county %>% filter(fips %in% complete_2008$fips, fips %in% complete_covid$fips)
+
+tibble(
+  sample = c("2008 complete case", "COVID complete case", "Complete in BOTH crises"),
+  n = c(nrow(complete_2008), nrow(complete_covid), nrow(complete_both))
+)
+```
+
+That last number (complete in both crises) is what should land near ~3,012.
+
+```{r step2-cost}
+# marginal cost of ONE column: rows regained if we stopped requiring just
+# that column (all others still required). Small/zero costs mean that
+# column's missingness is already covered by the SAME counties missing
+# something else -- i.e. missingness is concentrated, not spread out.
+marginal_cost <- function(cols, complete_n) {
+  map_int(cols, function(col) {
+    other <- setdiff(cols, col)
+    nrow(county %>% filter(if_all(all_of(other), ~ !is.na(.)))) - complete_n
+  })
+}
+
+tibble(crisis = "2008", column = model_cols[["2008"]],
+       counties_regained_if_dropped = marginal_cost(model_cols[["2008"]], nrow(complete_2008))) %>%
+  arrange(desc(counties_regained_if_dropped))
+
+tibble(crisis = "covid", column = model_cols[["covid"]],
+       counties_regained_if_dropped = marginal_cost(model_cols[["covid"]], nrow(complete_covid))) %>%
+  arrange(desc(counties_regained_if_dropped))
+```
+
+Read this alongside the NA table above: the 6 controls plus migration/age-
+structure all have near-identical NA counts (~92-99 for 2008, ~92-153 for
+COVID) and near-**zero** marginal cost individually -- meaning they're
+missing for the *same* ~92-96 counties (almost certainly a shared SAIPE/PEP
+join failure for that block of counties, not independent problems).
+`proprietor_share` is the one column that costs something extra on top of
+that shared block (52 counties in 2008, and check the table for COVID), and
+`population_density` costs 1. Puerto Rico's 78 municipios (all missing every
+control, see Step 1) are inside that shared-missingness block.
+
+```{r step2-fips-checks}
+cat("Duplicate FIPS:", sum(duplicated(county$fips)), "\n")
+cat("FIPS with a 2008 outcome only:", sum(!is.na(county$recovery_ratio_2008) & is.na(county$recovery_ratio_covid)), "\n")
+cat("FIPS with a COVID outcome only:", sum(is.na(county$recovery_ratio_2008) & !is.na(county$recovery_ratio_covid)), "\n")
+cat("FIPS with neither outcome:", sum(is.na(county$recovery_ratio_2008) & is.na(county$recovery_ratio_covid)), "\n")
+```
+
+No duplicate FIPS. The 11 one-crisis-only/neither rows are exactly the
+Alaska rows identified in Step 1 -- not a join bug.
+
+## Step 3: Predictor sanity
+
+```{r step3-summary}
+summarize_vars <- function(cols) {
+  map_dfr(cols, function(col) {
+    x <- county[[col]]
+    tibble(column = col, n = sum(!is.na(x)), mean = mean(x, na.rm=TRUE), median = median(x, na.rm=TRUE),
+           sd = sd(x, na.rm=TRUE), min = min(x, na.rm=TRUE), max = max(x, na.rm=TRUE),
+           p1 = quantile(x, .01, na.rm=TRUE), p99 = quantile(x, .99, na.rm=TRUE))
+  })
+}
+summarize_vars(model_cols[["2008"]][-1])
+summarize_vars(model_cols[["covid"]][-1])
+```
+
+**Self-employment scale:** `proprietor_share_2007` ranges
+`r round(min(county$proprietor_share_2007, na.rm=TRUE),3)`--`r round(max(county$proprietor_share_2007, na.rm=TRUE),3)`,
+`proprietor_share_2019` ranges
+`r round(min(county$proprietor_share_2019, na.rm=TRUE),3)`--`r round(max(county$proprietor_share_2019, na.rm=TRUE),3)` --
+both on a **0-1 proportion** scale (not 0-100), consistent between crises.
+
+**Unemployment / working-age share scale:** `pre_unemployment_*` ranges
+`r round(min(county$pre_unemployment_2007, na.rm=TRUE),1)`--`r round(max(county$pre_unemployment_2007, na.rm=TRUE),1)`%
+(2007) and
+`r round(min(county$pre_unemployment_2019, na.rm=TRUE),1)`--`r round(max(county$pre_unemployment_2019, na.rm=TRUE),1)`%
+(2019) -- plausible county unemployment rates, consistent scale both years.
+`working_age_share_*` ranges
+`r round(min(county$working_age_share_2007, na.rm=TRUE),1)`--`r round(max(county$working_age_share_2007, na.rm=TRUE),1)`
+(both years), a **percent-of-population** scale, plausible.
+
+```{r step3-migration-pop}
+ggplot(county, aes(log(total_population_2007), net_migration_rate_2007)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(se = FALSE, color = "firebrick") +
+  labs(title = "Net migration rate vs. log(population), 2007",
+       x = "log(total population, 2007)", y = "net migration rate (per 1,000)")
+```
+
+Correlation between migration and log(population) is only
+`r round(cor(county$net_migration_rate_2007, log(county$total_population_2007), use="complete.obs"),3)`
+(weak), but the plot shows the variance clearly **fanning out** at low
+population -- small counties swing much further in either direction
+(net migration rate is a rate over a tiny denominator, so a handful of movers
+produces a huge per-1,000 swing). This is expected given how the rate is
+built, not a bug, but it means migration for the smallest counties is noisy
+and worth keeping in mind for modeling (robust SEs / winsorizing / weighting
+are your call, not made here).
+
+```{r step3-pop-density-skew}
+tibble(
+  variable = c("total_population_2007", "population_density_2007"),
+  skew_raw = c(skewness(county$total_population_2007, na.rm=TRUE, type=2),
+               skewness(county$population_density_2007, na.rm=TRUE, type=2)),
+  skew_log = c(skewness(log(county$total_population_2007), na.rm=TRUE, type=2),
+               skewness(log(county$population_density_2007), na.rm=TRUE, type=2))
+)
+```
+
+Both are extremely right-skewed raw (14.7, 27.6) and land almost exactly at 0
+once logged (0.28, -0.02) -- logging is clearly warranted for both if they go
+into a linear model.
+
+```{r step3-rucc}
+cat("Storage type:", class(county$rucc_2003_2007), "\n")
+table(county$rucc_2003_2007, useNA = "ifany")
+```
+
+RUCC is stored as a **number** (1-9), not a factor -- worth deciding whether
+to treat it as continuous or convert to a factor before modeling (it's an
+ordinal classification, not a true interval scale). 96 counties missing.
+
+```{r step3-poptrend}
+range(county$pop_trend_2007, na.rm = TRUE)
+range(county$pop_trend_2019, na.rm = TRUE)
+county %>% filter(pop_trend_2007 < -8 | pop_trend_2007 > 6) %>%
+  select(county_name, pop_trend_2007, total_population_2007)
+```
+
+`pop_trend` (annualized %/year, 2000-2007 or 2012-2019 window) has a few
+counties beyond -8%/year or +6%/year -- real, tiny-population counties again,
+not obviously broken, but worth an eyeball given how sensitive a CAGR is over
+a 7-year window on a small base.
+
+## Step 4: Correlations
+
+```{r step4-corr-2008, fig.width=7, fig.height=6}
+vars_2008 <- model_cols[["2008"]][-1]
+vars_covid <- model_cols[["covid"]][-1]
+
+cor_2008 <- cor(county[vars_2008], use = "pairwise.complete.obs")
+cor_covid <- cor(county[vars_covid], use = "pairwise.complete.obs")
+
+round(cor_2008, 2)
+round(cor_covid, 2)
+
+plot_corr_heatmap <- function(cm, title) {
+  as.data.frame(cm) %>%
+    rownames_to_column("var1") %>%
+    pivot_longer(-var1, names_to = "var2", values_to = "r") %>%
+    ggplot(aes(var1, var2, fill = r)) +
+    geom_tile() +
+    geom_text(aes(label = round(r, 2)), size = 2.8) +
+    scale_fill_gradient2(low = "steelblue", high = "firebrick", mid = "white", midpoint = 0, limits = c(-1,1)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = title, x = NULL, y = NULL)
+}
+plot_corr_heatmap(cor_2008, "Correlation matrix, 2008 predictors + controls")
+```
+
+```{r step4-corr-covid, fig.width=7, fig.height=6}
+plot_corr_heatmap(cor_covid, "Correlation matrix, COVID predictors + controls")
+```
+
+```{r step4-pairs}
+list_high_pairs <- function(cm, studied_vars) {
+  idx <- which(abs(cm) > 0.6 & abs(cm) < 1, arr.ind = TRUE)
+  tibble(
+    var1 = rownames(cm)[idx[,1]], var2 = colnames(cm)[idx[,2]], r = cm[idx]
+  ) %>%
+    filter(var1 < var2) %>%
+    mutate(pair_type = case_when(
+      var1 %in% studied_vars & var2 %in% studied_vars ~ "studied x studied",
+      var1 %in% studied_vars | var2 %in% studied_vars ~ "studied x control",
+      TRUE ~ "control x control"
+    )) %>%
+    arrange(desc(abs(r)))
+}
+
+studied_2008 <- mapping$`2008 column`[2:5]
+studied_covid <- mapping$`COVID column`[2:5]
+
+list_high_pairs(cor_2008, studied_2008)
+list_high_pairs(cor_covid, studied_covid)
+```
+
+```{r step4-specific}
+cat("income vs poverty, 2007:", round(cor(county$median_hh_income_2007, county$poverty_rate_2007, use="complete.obs"), 3), "\n")
+cat("income vs poverty, 2019:", round(cor(county$median_hh_income_2019, county$poverty_rate_2019, use="complete.obs"), 3), "\n")
+cat("migration vs pop_trend, 2007:", round(cor(county$net_migration_rate_2007, county$pop_trend_2007, use="complete.obs"), 3), "\n")
+cat("migration vs pop_trend, 2019:", round(cor(county$net_migration_rate_2019, county$pop_trend_2019, use="complete.obs"), 3), "\n")
+```
+
+Only one pair clears |r| > 0.6 in either crisis: **income vs. poverty**
+(-0.75 in 2007, -0.77 in 2019) -- both controls, not a studied predictor. No
+studied predictor correlates with any control above 0.6 in either crisis.
+Migration vs. pop_trend sits at 0.58 (2007) / 0.57 (2019) -- related but
+below the 0.6 line, consistent with pop_trend being partly driven by
+migration but also by births/deaths.

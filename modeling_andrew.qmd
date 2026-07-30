@@ -1,0 +1,1029 @@
+---
+title: "Primary Modeling: County Economic Recovery, 2008 vs. COVID"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    df-print: kable
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(estimatr)   # lm_robust, HC1 SEs
+library(glmnet)
+library(randomForest)
+
+set.seed(20260729)
+
+county <- read_csv("spine_data.csv", show_col_types = FALSE)
+dir.create("raw_data", showWarnings = FALSE)
+```
+
+Read-only on `spine_data.csv`. Outcome is `log(recovery_ratio)` in both
+crises, no exceptions. Identical predictor set, control set, and transform
+for both crises -- the only thing that varies between the two calls below is
+which year's columns feed the same function.
+
+## Data prep (one function, called twice)
+
+```{r crisis-cols}
+# The ONE crisis-specific thing in this whole document: which source column
+# maps to which generic name, per crisis.
+crisis_cols <- list(
+  "2008" = c(outcome = "recovery_ratio_2008", flag_tiny = "flag_tiny_base_2008",
+             proprietor_share = "proprietor_share_2007", migration_rate = "net_migration_rate_2007",
+             unemployment_rate = "pre_unemployment_2007", working_age_share = "working_age_share_2007",
+             income = "median_hh_income_2007", poverty_rate = "poverty_rate_2007",
+             population = "total_population_2007", density = "population_density_2007",
+             rucc = "rucc_2003_2007", pop_trend = "pop_trend_2007"),
+  "covid" = c(outcome = "recovery_ratio_covid", flag_tiny = "flag_tiny_base_covid",
+              proprietor_share = "proprietor_share_2019", migration_rate = "net_migration_rate_2019",
+              unemployment_rate = "pre_unemployment_2019", working_age_share = "working_age_share_2019",
+              income = "median_hh_income_2019", poverty_rate = "poverty_rate_2019",
+              population = "total_population_2019", density = "population_density_2019",
+              rucc = "rucc_2013_2019", pop_trend = "pop_trend_2019")
+)
+
+# Studied predictors get standardized WITHIN this crisis's complete-case
+# sample; controls are used on their stated scale (raw or logged) and never
+# standardized -- they're not being interpreted, only held constant.
+prepare_crisis_data <- function(raw, crisis) {
+  cols <- crisis_cols[[crisis]]
+  raw %>%
+    transmute(
+      fips, county_name,
+      outcome_raw = .data[[cols[["outcome"]]]],
+      flag_tiny_base = .data[[cols[["flag_tiny"]]]],
+      proprietor_share = .data[[cols[["proprietor_share"]]]],
+      migration_rate = .data[[cols[["migration_rate"]]]],
+      unemployment_rate = .data[[cols[["unemployment_rate"]]]],
+      working_age_share = .data[[cols[["working_age_share"]]]],
+      income = .data[[cols[["income"]]]],
+      poverty_rate = .data[[cols[["poverty_rate"]]]],
+      population = .data[[cols[["population"]]]],
+      density = .data[[cols[["density"]]]],
+      rucc_raw = .data[[cols[["rucc"]]]],
+      pop_trend = .data[[cols[["pop_trend"]]]]
+    ) %>%
+    filter(if_all(c(outcome_raw, proprietor_share, migration_rate, unemployment_rate, working_age_share,
+                     income, poverty_rate, population, density, rucc_raw, pop_trend), ~ !is.na(.))) %>%
+    mutate(
+      log_outcome = log(outcome_raw),
+      log_population = log(population),
+      log_density = log(density),
+      rucc = relevel(factor(rucc_raw), ref = "1"),  # unordered factor(), level 1 = reference
+      proprietor_share_z = as.numeric(scale(proprietor_share)),
+      migration_rate_z = as.numeric(scale(migration_rate)),
+      unemployment_rate_z = as.numeric(scale(unemployment_rate)),
+      working_age_share_z = as.numeric(scale(working_age_share))
+    )
+}
+
+studied_z <- c("proprietor_share_z", "migration_rate_z", "unemployment_rate_z", "working_age_share_z")
+controls  <- c("income", "poverty_rate", "log_population", "log_density", "rucc", "pop_trend")
+controls_no_wealth <- setdiff(controls, c("income", "poverty_rate"))
+```
+
+```{r run-crisis-models}
+# Everything below is written once and driven by `crisis`; no 2008 block
+# copy-pasted into a COVID block.
+run_crisis_models <- function(raw, crisis) {
+  df <- prepare_crisis_data(raw, crisis)
+
+  ## 1. Pooled OLS, HC1 robust SEs (diagnostics showed migration variance
+  ## fanning out in small-population counties -- default SEs would be wrong)
+  ols_formula <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
+  ols <- lm_robust(ols_formula, data = df, se_type = "HC1")
+
+  ## 2. LASSO -- controls (incl. all 8 RUCC dummies) unpenalized, studied
+  ## predictors penalized. penalty.factor = 0 keeps a control in the model
+  ## regardless of magnitude, so "holding X constant" stays true.
+  X <- model.matrix(as.formula(paste("~", paste(c(studied_z, controls), collapse = " + "))), data = df)[, -1]
+  y <- df$log_outcome
+  penalty <- ifelse(colnames(X) %in% studied_z, 1, 0)
+  set.seed(20260729)
+  cvfit <- cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty)
+
+  ## 3a. RF WITH controls incl. income/poverty -- prediction accuracy only.
+  rf_formula_a <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
+  set.seed(20260729)
+  rf_a <- randomForest(rf_formula_a, data = df, ntree = 500, importance = FALSE)
+
+  ## 3b. RF WITHOUT income/poverty -- so the 4 studied predictors compete
+  ## against each other and the remaining controls, not against wealth.
+  rf_formula_b <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls_no_wealth), collapse = " + ")))
+  set.seed(20260729)
+  rf_b <- randomForest(rf_formula_b, data = df, ntree = 500, importance = TRUE)
+
+  list(crisis = crisis, df = df, n = nrow(df), ols = ols, cvfit = cvfit,
+       coef_min = as.matrix(coef(cvfit, s = "lambda.min"))[, 1],
+       coef_1se = as.matrix(coef(cvfit, s = "lambda.1se"))[, 1],
+       rf_a = rf_a, rf_b = rf_b)
+}
+```
+
+```{r fit-or-load}
+# Cache fitted objects -- LASSO's CV and 500-tree RF x2 x2 crises aren't
+# instant; no need to refit on every render.
+cache_path <- "raw_data/modeling_andrew_results.rds"
+if (file.exists(cache_path)) {
+  results <- readRDS(cache_path)
+} else {
+  results <- list(
+    "2008" = run_crisis_models(county, "2008"),
+    "covid" = run_crisis_models(county, "covid")
+  )
+  saveRDS(results, cache_path)
+}
+res_2008 <- results[["2008"]]
+res_covid <- results[["covid"]]
+
+tibble(crisis = c("2008", "covid"), n = c(res_2008$n, res_covid$n))
+```
+
+## 1. Pooled OLS (HC1 robust SEs)
+
+```{r ols-studied}
+ols_studied_table <- function(res) {
+  s <- summary(res$ols)$coefficients[studied_z, ]
+  as_tibble(s, rownames = "term") %>%
+    rename(estimate = Estimate, robust_se = `Std. Error`, t = `t value`,
+           p = `Pr(>|t|)`, ci_low = `CI Lower`, ci_high = `CI Upper`) %>%
+    select(term, estimate, robust_se, t, p, ci_low, ci_high)
+}
+bind_rows("2008" = ols_studied_table(res_2008), "covid" = ols_studied_table(res_covid), .id = "crisis")
+```
+
+```{r ols-fit-stats}
+tibble(
+  crisis = c("2008", "covid"),
+  adj_r_squared = c(res_2008$ols$adj.r.squared, res_covid$ols$adj.r.squared),
+  residual_sd = c(sqrt(res_2008$ols$res_var), sqrt(res_covid$ols$res_var))
+)
+```
+
+### Appendix: control coefficients (not interpreted, reported for completeness)
+
+```{r ols-controls-appendix}
+ols_controls_table <- function(res) {
+  s <- summary(res$ols)$coefficients
+  as_tibble(s, rownames = "term") %>%
+    filter(!term %in% studied_z, term != "(Intercept)") %>%
+    rename(estimate = Estimate, robust_se = `Std. Error`, p = `Pr(>|t|)`) %>%
+    select(term, estimate, robust_se, p)
+}
+bind_rows("2008" = ols_controls_table(res_2008), "covid" = ols_controls_table(res_covid), .id = "crisis")
+```
+
+## 2. LASSO (10-fold CV, controls + RUCC dummies unpenalized)
+
+```{r lasso-table}
+lasso_table <- function(res) {
+  tibble(term = names(res$coef_min), lambda_min = res$coef_min, lambda_1se = res$coef_1se) %>%
+    filter(term %in% studied_z)
+}
+lasso_results <- bind_rows("2008" = lasso_table(res_2008), "covid" = lasso_table(res_covid), .id = "crisis")
+lasso_results %>% mutate(survives_1se = lambda_1se != 0)
+```
+
+```{r lasso-full-coefs}
+# full coefficient vectors (controls included) at lambda.1se, for reference
+tibble(term = names(res_2008$coef_1se), coef_2008 = res_2008$coef_1se) %>%
+  left_join(tibble(term = names(res_covid$coef_1se), coef_covid = res_covid$coef_1se), by = "term")
+```
+
+## 3. Random forest (500 trees), run twice per crisis
+
+### 3a. WITH controls (income/poverty included) -- prediction accuracy only
+
+```{r rf-a-fit}
+rf_a_stats <- tibble(
+  crisis = c("2008", "covid"),
+  oob_r_squared = c(res_2008$rf_a$rsq[500], res_covid$rf_a$rsq[500]),
+  oob_rmse = c(sqrt(res_2008$rf_a$mse[500]), sqrt(res_covid$rf_a$mse[500]))
+)
+rf_a_stats
+```
+
+### 3b. WITHOUT income/poverty -- permutation importance only
+
+```{r rf-b-importance}
+rf_b_importance <- function(res) {
+  imp <- importance(res$rf_b, type = 1)
+  tibble(term = rownames(imp), pct_inc_mse = imp[, 1]) %>% arrange(desc(pct_inc_mse))
+}
+bind_rows("2008" = rf_b_importance(res_2008), "covid" = rf_b_importance(res_covid), .id = "crisis")
+```
+
+## 4. Comparison table
+
+```{r comparison-table}
+rf_b_rank <- function(res) {
+  imp <- importance(res$rf_b, type = 1)
+  tibble(term = rownames(imp), pct_inc_mse = imp[, 1]) %>%
+    mutate(rank = rank(-pct_inc_mse)) %>%
+    filter(term %in% studied_z)
+}
+
+build_comparison <- function(res, crisis_label) {
+  ols_t <- ols_studied_table(res) %>% select(term, ols_estimate = estimate, ols_robust_se = robust_se)
+  lasso_t <- lasso_table(res) %>% mutate(survives_1se = lambda_1se != 0) %>% select(term, survives_1se)
+  rf_t <- rf_b_rank(res) %>% select(term, rf_importance_rank = rank)
+  ols_t %>% left_join(lasso_t, by = "term") %>% left_join(rf_t, by = "term") %>% mutate(crisis = crisis_label)
+}
+
+comparison <- bind_rows(build_comparison(res_2008, "2008"), build_comparison(res_covid, "covid")) %>%
+  select(term, crisis, ols_estimate, ols_robust_se, survives_1se, rf_importance_rank)
+comparison
+```
+
+```{r comparison-signs}
+sign_flip <- comparison %>%
+  select(term, crisis, ols_estimate) %>%
+  pivot_wider(names_from = crisis, values_from = ols_estimate) %>%
+  mutate(sign_flip = sign(`2008`) != sign(covid))
+sign_flip
+```
+
+## Robustness checks
+
+These are checks on the primary result, not a replacement for it.
+
+```{r robustness-tinybase}
+# union of flag_tiny_base across BOTH crises, computed on the full table --
+# same counties dropped from both samples, so the 2008-vs-COVID comparison
+# doesn't break by comparing different populations.
+tiny_union_fips <- county %>% filter(flag_tiny_base_2008 | flag_tiny_base_covid) %>% pull(fips)
+
+run_ols_variant <- function(df, formula_rhs = paste(c(studied_z, controls), collapse = " + ")) {
+  lm_robust(as.formula(paste("log_outcome ~", formula_rhs)), data = df, se_type = "HC1")
+}
+
+ols_notiny_2008 <- run_ols_variant(res_2008$df %>% filter(!fips %in% tiny_union_fips))
+ols_notiny_covid <- run_ols_variant(res_covid$df %>% filter(!fips %in% tiny_union_fips))
+
+cat("Tiny-base union size:", length(tiny_union_fips), "counties, excluded from both crises\n")
+cat("n after exclusion -- 2008:", nrow(res_2008$df %>% filter(!fips %in% tiny_union_fips)),
+    " covid:", nrow(res_covid$df %>% filter(!fips %in% tiny_union_fips)), "\n")
+
+bind_rows(
+  "2008" = as_tibble(summary(ols_notiny_2008)$coefficients[studied_z, c("Estimate", "Pr(>|t|)")], rownames = "term"),
+  "covid" = as_tibble(summary(ols_notiny_covid)$coefficients[studied_z, c("Estimate", "Pr(>|t|)")], rownames = "term"),
+  .id = "crisis"
+)
+```
+
+```{r robustness-winsorized}
+# outcome (already log-scale, per the project's stated transform) winsorized
+# at its own 1st/99th percentile, per crisis
+winsorize <- function(x, p = 0.01) {
+  bounds <- quantile(x, c(p, 1 - p))
+  pmin(pmax(x, bounds[1]), bounds[2])
+}
+
+ols_wins_2008 <- run_ols_variant(res_2008$df %>% mutate(log_outcome = winsorize(log_outcome)))
+ols_wins_covid <- run_ols_variant(res_covid$df %>% mutate(log_outcome = winsorize(log_outcome)))
+
+bind_rows(
+  "2008" = as_tibble(summary(ols_wins_2008)$coefficients[studied_z, c("Estimate", "Pr(>|t|)")], rownames = "term"),
+  "covid" = as_tibble(summary(ols_wins_covid)$coefficients[studied_z, c("Estimate", "Pr(>|t|)")], rownames = "term"),
+  .id = "crisis"
+)
+```
+
+```{r robustness-comparison}
+# side-by-side against the primary OLS estimates, for an at-a-glance sign/magnitude check
+primary <- comparison %>% filter(crisis %in% c("2008","covid")) %>%
+  select(term, crisis, primary_estimate = ols_estimate) %>% distinct()
+
+robustness_compare <- bind_rows(
+  as_tibble(summary(ols_notiny_2008)$coefficients[studied_z, "Estimate", drop=FALSE], rownames="term") %>%
+    mutate(crisis = "2008", variant = "tiny_base_union_excluded") %>% rename(estimate = Estimate),
+  as_tibble(summary(ols_notiny_covid)$coefficients[studied_z, "Estimate", drop=FALSE], rownames="term") %>%
+    mutate(crisis = "covid", variant = "tiny_base_union_excluded") %>% rename(estimate = Estimate),
+  as_tibble(summary(ols_wins_2008)$coefficients[studied_z, "Estimate", drop=FALSE], rownames="term") %>%
+    mutate(crisis = "2008", variant = "winsorized_outcome") %>% rename(estimate = Estimate),
+  as_tibble(summary(ols_wins_covid)$coefficients[studied_z, "Estimate", drop=FALSE], rownames="term") %>%
+    mutate(crisis = "covid", variant = "winsorized_outcome") %>% rename(estimate = Estimate)
+) %>%
+  left_join(primary, by = c("term", "crisis")) %>%
+  mutate(same_sign = sign(estimate) == sign(primary_estimate)) %>%
+  select(term, crisis, variant, primary_estimate, estimate, same_sign)
+
+robustness_compare
+```
+
+## Section A: Wealth-band split
+
+Terciles of pre-crisis income, computed **separately per crisis year** and
+**on that crisis's own modeling sample** (not reusing the full-spine
+`wealth_band_*` columns, which were cut on a different, larger population and
+would produce lopsided bands here) -- same OLS spec, run within each band,
+income and poverty still included as controls inside every band. 6 models
+total.
+
+```{r wealthband-setup}
+add_income_band <- function(df) {
+  df %>% mutate(income_band = cut(income, breaks = quantile(income, c(0, 1/3, 2/3, 1)),
+                                   include.lowest = TRUE, labels = c("lower", "middle", "higher")))
+}
+df_2008_banded <- add_income_band(res_2008$df)
+df_covid_banded <- add_income_band(res_covid$df)
+
+bind_rows(
+  "2008" = count(df_2008_banded, income_band),
+  "covid" = count(df_covid_banded, income_band),
+  .id = "crisis"
+)
+```
+
+```{r wealthband-fit}
+# same run_ols_variant() helper as the robustness section, just subset by band
+run_band_ols <- function(df, band) {
+  run_ols_variant(df %>% filter(income_band == band))
+}
+
+bands <- c("lower", "middle", "higher")
+wealthband_cache <- "raw_data/modeling_andrew_wealthband_fits.rds"
+if (file.exists(wealthband_cache)) {
+  band_fits <- readRDS(wealthband_cache)
+} else {
+  band_fits <- list(
+    "2008" = setNames(lapply(bands, function(b) run_band_ols(df_2008_banded, b)), bands),
+    "covid" = setNames(lapply(bands, function(b) run_band_ols(df_covid_banded, b)), bands)
+  )
+  saveRDS(band_fits, wealthband_cache)
+}
+
+band_table <- imap_dfr(band_fits, function(crisis_fits, crisis) {
+  imap_dfr(crisis_fits, function(fit, band) {
+    s <- summary(fit)$coefficients[studied_z, ]
+    as_tibble(s, rownames = "term") %>%
+      rename(estimate = Estimate, robust_se = `Std. Error`, p = `Pr(>|t|)`) %>%
+      mutate(crisis = crisis, band = band)
+  })
+})
+
+band_table %>%
+  select(term, crisis, band, estimate, robust_se, p) %>%
+  arrange(term, crisis, factor(band, levels = bands))
+```
+
+```{r wealthband-n}
+tibble(
+  crisis = rep(c("2008", "covid"), each = 3), band = rep(bands, 2),
+  n = c(sapply(band_fits[["2008"]], function(f) f$nobs), sapply(band_fits[["covid"]], function(f) f$nobs))
+)
+```
+
+### Flags
+
+```{r wealthband-sign-flip}
+# sign flip across bands, WITHIN the same crisis
+sign_by_band <- band_table %>%
+  select(term, crisis, band, estimate) %>%
+  pivot_wider(names_from = band, values_from = estimate) %>%
+  mutate(sign_flip_within_crisis = !(sign(lower) == sign(middle) & sign(middle) == sign(higher)))
+sign_by_band
+```
+
+```{r wealthband-migration-2008}
+# is migration_rate in 2008 (null in the pooled model, p = .75) non-null in ANY band?
+band_table %>% filter(term == "migration_rate_z", crisis == "2008") %>% select(band, estimate, p)
+```
+
+```{r wealthband-pooled-vs-bands}
+# pooled coefficient vs. the 3 band-level coefficients, side by side
+pooled <- comparison %>% select(term, crisis, pooled_estimate = ols_estimate) %>% distinct()
+band_table %>%
+  select(term, crisis, band, band_estimate = estimate, p) %>%
+  left_join(pooled, by = c("term", "crisis")) %>%
+  arrange(term, crisis, factor(band, levels = bands))
+```
+
+## Section B: Placebo -- calm period (2014 to 2017)
+
+Same 4 studied predictors, same 6 controls, same log transform, same OLS/RF
+methods as the primary models. Outcome: `log(employment_2017 /
+employment_2014)`. Predictors and controls measured 2013 -- strictly before
+the window.
+
+**Data-availability notes, since this window wasn't part of the original
+pipeline (which only ever pulled 2007/2019 vintages):**
+
+- **2017 county employment isn't in `raw_data/01_bls_panel.rds`** -- the
+  original BLS pull deliberately skipped 2017 (`years_needed` was
+  `2006:2016, 2018:2025`, since neither crisis window needed it). BLS's own
+  site returns HTTP 403 to every automated request from this environment
+  (documented in `pipeline/01_bls_employment.R`), so `laucnty17.xlsx` was
+  retrieved from the Internet Archive's Wayback Machine
+  (`web.archive.org`, snapshot of the same file BLS originally published) --
+  a public mirror of the same government file, not a workaround of any
+  access control. That file also uses a different (older, multi-row-wrapped)
+  header layout than the 2007/2019 files, so it needed its own parser
+  rather than reusing `01_bls_employment.R`'s header-detection logic.
+- **All 2013 predictor/control values are new**, since the pipeline never
+  pulled a 2013 vintage of anything. Reused already-cached raw files where
+  possible: BEA `CAEMP25N` bulk file (2001-2022, already has a 2013 column),
+  USDA RUCC 2013 vintage (already pulled for the COVID side), Census PEP
+  2010s population file (already has `POPESTIMATE2010`/`POPESTIMATE2013`),
+  Census Gazetteer land area, and the already-cached per-state
+  `cc-est2019-agesex-*.csv` files (`YEAR` code 6 = 2013, same coding scheme
+  documented in `pipeline/19_age_structure.R`). Two fresh pulls were needed:
+  SAIPE 2013 (income/poverty) and IRS SOI's 2012-2013 county migration pair
+  -- both plain API/CSV pulls, no access issues.
+- **`pop_trend_2013` uses a 3-year window (2010-2013), not the original
+  7-year window.** A 7-year window ending in 2013 (e.g. 2006-2013) would
+  cross the Census 2000s-intercensal/2010s-vintage boundary, mixing two
+  different population-estimate methodologies in one CAGR calculation --
+  the original 2007/2019 windows never had to do this (each stayed inside
+  one vintage). 2010-2013 stays inside the single 2010s vintage file
+  instead, at the cost of a shorter window.
+
+```{r placebo-assemble}
+placebo_cache <- "raw_data/placebo_2013_pieces.rds"
+valid_state_fips <- c("01","02","04","05","06","08","09","10","11","12","13","15","16","17",
+                       "18","19","20","21","22","23","24","25","26","27","28","29","30","31",
+                       "32","33","34","35","36","37","38","39","40","41","42","44","45","46",
+                       "47","48","49","50","51","53","54","55","56")
+
+if (file.exists(placebo_cache)) {
+  pieces <- readRDS(placebo_cache)
+} else {
+  ua <- "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+  census_key <- Sys.getenv("CENSUS_API_KEY")
+
+  # outcome: employment 2014 (cached panel) and 2017 (Wayback-fetched xlsx, bespoke header layout)
+  panel <- readRDS("raw_data/01_bls_panel.rds")
+  emp_2014 <- panel %>% filter(year == 2014) %>% transmute(fips, employed_2014 = employed)
+
+  wayback_url <- "https://web.archive.org/web/20190111093926/https://www.bls.gov/lau/laucnty17.xlsx"
+  if (!file.exists("raw_data/laucnty17.xlsx")) {
+    GET(wayback_url, write_disk("raw_data/laucnty17.xlsx", overwrite = TRUE), timeout(60))
+  }
+  emp_2017_raw <- read_excel("raw_data/laucnty17.xlsx", col_names = FALSE, skip = 6)
+  names(emp_2017_raw)[1:10] <- c("laus_code", "state_fips", "county_fips", "county_name", "year",
+                                  "blank", "labor_force", "employed", "unemployed", "unemployment_rate")
+  emp_2017 <- emp_2017_raw %>%
+    filter(!is.na(state_fips), !is.na(county_fips)) %>%
+    transmute(fips = paste0(sprintf("%02s", state_fips), sprintf("%03s", county_fips)),
+              employed_2017 = as.numeric(employed))
+  outcome_placebo <- emp_2014 %>% inner_join(emp_2017, by = "fips") %>%
+    mutate(log_outcome = log(employed_2017 / employed_2014))
+
+  # proprietor_share_2013 (cached BEA CAEMP25N bulk file, already has a 2013 column)
+  caemp <- read_csv("raw_data/CAEMP25N_extracted/CAEMP25N__ALL_AREAS_2001_2022.csv", col_types = cols(.default = "c"))
+  proprietor_2013 <- caemp %>%
+    mutate(fips = trimws(GeoFIPS)) %>%
+    filter(nchar(fips) == 5, substr(fips, 3, 5) != "000", LineCode %in% c("10", "40")) %>%
+    transmute(fips, LineCode, emp = as.numeric(`2013`)) %>%
+    pivot_wider(names_from = LineCode, values_from = emp, names_prefix = "line_") %>%
+    mutate(proprietor_share_2013 = line_40 / line_10) %>%
+    select(fips, proprietor_share_2013)
+
+  # migration_rate_2013 (fresh IRS SOI 2012-2013 pull, same "code 96" logic as pipeline/12)
+  download_soi <- function(fname) {
+    path <- paste0("raw_data/", fname)
+    if (!file.exists(path)) GET(paste0("https://www.irs.gov/pub/irs-soi/", fname),
+                                 add_headers(`User-Agent` = ua), write_disk(path, overwrite = TRUE), timeout(60))
+    path
+  }
+  read_soi_csv <- function(path) read_csv(path, col_types = cols(.default = "c"))
+  inflow_1213 <- read_soi_csv(download_soi("countyinflow1213.csv")) %>%
+    filter(y1_statefips == "96", y1_countyfips == "000") %>%
+    transmute(fips = paste0(y2_statefips, y2_countyfips), inflow_n2 = as.numeric(n2))
+  outflow_1213 <- read_soi_csv(download_soi("countyoutflow1213.csv")) %>%
+    filter(y2_statefips == "96", y2_countyfips == "000") %>%
+    transmute(fips = paste0(y1_statefips, y1_countyfips), outflow_n2 = as.numeric(n2))
+
+  # population/density/pop_trend 2013 (cached PEP 2010s file + cached Gazetteer)
+  pep <- read_csv("raw_data/co-est2019-alldata.csv", show_col_types = FALSE,
+                   col_types = cols(.default = "c"), locale = locale(encoding = "latin1"))
+  pop_2013 <- pep %>% filter(SUMLEV == "050") %>%
+    transmute(fips = paste0(sprintf("%02s", STATE), sprintf("%03s", COUNTY)),
+              pop_2010 = as.numeric(POPESTIMATE2010), pop_2013 = as.numeric(POPESTIMATE2013))
+  gazetteer <- read_tsv(list.files("raw_data/gaz2024", pattern = "\\.txt$", full.names = TRUE)[1],
+                         show_col_types = FALSE, col_types = cols(GEOID = col_character())) %>%
+    transmute(fips = sprintf("%05s", GEOID), land_area_sqmi = ALAND_SQMI)
+  pop_density_2013 <- pop_2013 %>% left_join(gazetteer, by = "fips") %>%
+    transmute(fips, population_2013 = pop_2013, population_density_2013 = pop_2013 / land_area_sqmi,
+              pop_trend_2013 = 100 * ((pop_2013 / pop_2010)^(1/3) - 1))
+  migration_2013 <- inflow_1213 %>% inner_join(outflow_1213, by = "fips") %>%
+    inner_join(pop_2013 %>% select(fips, pop_2013), by = "fips") %>%
+    mutate(net_migration_rate_2013 = 1000 * (inflow_n2 - outflow_n2) / pop_2013) %>%
+    select(fips, net_migration_rate_2013)
+
+  # unemployment_rate_2013 (clean-format xlsx, same header-detection as pipeline/18)
+  preview <- read_excel("raw_data/laucnty13.xlsx", col_names = FALSE, n_max = 10)
+  header_row <- which(apply(preview, 1, function(r) any(grepl("Unemployment Rate", r, ignore.case = TRUE))))
+  raw13 <- read_excel("raw_data/laucnty13.xlsx", skip = header_row - 1)
+  names(raw13) <- make.unique(names(raw13))
+  unemployment_2013 <- raw13 %>%
+    rename_with(~"state_fips", matches("State FIPS", ignore.case = TRUE)) %>%
+    rename_with(~"county_fips", matches("County FIPS", ignore.case = TRUE)) %>%
+    rename_with(~"rate_raw", matches("Unemployment Rate", ignore.case = TRUE)) %>%
+    filter(!is.na(state_fips), !is.na(county_fips)) %>%
+    transmute(fips = paste0(sprintf("%02s", state_fips), sprintf("%03s", county_fips)),
+              pre_unemployment_2013 = as.numeric(rate_raw))
+
+  # working_age_share_2013 (cached per-state agesex files, YEAR code 6 = 2013)
+  pull_agesex13 <- function(sf) {
+    read_csv(sprintf("raw_data/cc-est2019-agesex-%s.csv", sf), show_col_types = FALSE, col_types = cols(.default = "c")) %>%
+      filter(SUMLEV == "050", YEAR == "6") %>%
+      transmute(fips = paste0(sprintf("%02s", STATE), sprintf("%03s", COUNTY)),
+                pop_est = as.numeric(POPESTIMATE),
+                working_age_pop = as.numeric(AGE2544_TOT) + as.numeric(AGE4564_TOT))
+  }
+  agesex_2013 <- bind_rows(lapply(valid_state_fips, pull_agesex13)) %>%
+    mutate(working_age_share_2013 = 100 * working_age_pop / pop_est) %>%
+    select(fips, working_age_share_2013)
+
+  # rucc_2013 (cached xls, already pulled for the COVID side)
+  rucc_2013 <- read_excel("raw_data/rucc2013.xls") %>%
+    transmute(fips = sprintf("%05s", FIPS), rucc_2013 = as.integer(RUCC_2013))
+
+  # SAIPE 2013 (income + poverty) -- fresh pull, only new Census API call needed
+  url <- paste0("https://api.census.gov/data/timeseries/poverty/saipe?get=NAME,SAEPOVRTALL_PT,SAEMHI_PT&for=county:*&in=state:*&YEAR=2013&key=", census_key)
+  raw_saipe <- fromJSON(url)
+  saipe_2013 <- as_tibble(raw_saipe[-1, ], .name_repair = "minimal")
+  names(saipe_2013) <- raw_saipe[1, ]
+  saipe_2013 <- saipe_2013 %>%
+    transmute(fips = paste0(state, county), poverty_rate_2013 = as.numeric(SAEPOVRTALL_PT),
+              median_hh_income_2013 = as.numeric(SAEMHI_PT))
+
+  pieces <- list(outcome_placebo = outcome_placebo, proprietor = proprietor_2013, migration = migration_2013,
+                 pop_density = pop_density_2013, unemployment = unemployment_2013, agesex = agesex_2013,
+                 rucc = rucc_2013, saipe = saipe_2013)
+  saveRDS(pieces, placebo_cache)
+}
+```
+
+```{r placebo-model}
+placebo_df <- pieces$outcome_placebo %>%
+  left_join(pieces$proprietor, by = "fips") %>%
+  left_join(pieces$migration, by = "fips") %>%
+  left_join(pieces$unemployment, by = "fips") %>%
+  left_join(pieces$agesex, by = "fips") %>%
+  left_join(pieces$saipe, by = "fips") %>%
+  left_join(pieces$pop_density, by = "fips") %>%
+  left_join(pieces$rucc, by = "fips") %>%
+  filter(if_all(c(proprietor_share_2013, net_migration_rate_2013, pre_unemployment_2013, working_age_share_2013,
+                   median_hh_income_2013, poverty_rate_2013, population_2013, population_density_2013,
+                   rucc_2013, pop_trend_2013), ~ !is.na(.))) %>%
+  mutate(
+    log_population = log(population_2013), log_density = log(population_density_2013),
+    rucc = relevel(factor(rucc_2013), ref = "1"),
+    proprietor_share_z = as.numeric(scale(proprietor_share_2013)),
+    migration_rate_z = as.numeric(scale(net_migration_rate_2013)),
+    unemployment_rate_z = as.numeric(scale(pre_unemployment_2013)),
+    working_age_share_z = as.numeric(scale(working_age_share_2013)),
+    income = median_hh_income_2013, poverty_rate = poverty_rate_2013, pop_trend = pop_trend_2013
+  )
+
+cat("Placebo complete-case n:", nrow(placebo_df), "\n")
+
+placebo_formula <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
+placebo_fits_cache <- "raw_data/modeling_andrew_placebo_fits.rds"
+if (file.exists(placebo_fits_cache)) {
+  placebo_fits <- readRDS(placebo_fits_cache)
+  placebo_ols <- placebo_fits$placebo_ols
+  placebo_rf <- placebo_fits$placebo_rf
+} else {
+  placebo_ols <- lm_robust(placebo_formula, data = placebo_df, se_type = "HC1")
+  set.seed(20260729)
+  placebo_rf <- randomForest(placebo_formula, data = placebo_df, ntree = 500, importance = FALSE)
+  saveRDS(list(placebo_ols = placebo_ols, placebo_rf = placebo_rf), placebo_fits_cache)
+}
+
+as_tibble(summary(placebo_ols)$coefficients[studied_z, ], rownames = "term") %>%
+  rename(estimate = Estimate, robust_se = `Std. Error`, p = `Pr(>|t|)`) %>%
+  select(term, estimate, robust_se, p)
+```
+
+```{r placebo-fit-stats}
+tibble(
+  model = c("2008 (primary)", "COVID (primary)", "Placebo (2014-2017)"),
+  oob_r_squared = c(res_2008$rf_a$rsq[500], res_covid$rf_a$rsq[500], placebo_rf$rsq[500]),
+  oob_rmse = c(sqrt(res_2008$rf_a$mse[500]), sqrt(res_covid$rf_a$mse[500]), sqrt(placebo_rf$mse[500])),
+  ols_adj_r_squared = c(res_2008$ols$adj.r.squared, res_covid$ols$adj.r.squared, placebo_ols$adj.r.squared)
+)
+```
+
+## Relaxed LASSO
+
+Same spec as the standard LASSO section (same 4 studied predictors, same 6
+controls incl. all 8 RUCC dummies unpenalized, same 10-fold CV, same seed) --
+`relax = TRUE` fits, at every lambda, both the usual shrunk lasso fit and an
+unpenalized refit on that lambda's active set, then blends the two by
+`gamma` (gamma=1 is the standard shrunk lasso, gamma=0 is the fully
+de-biased refit). CV picks `lambda` and `gamma` jointly.
+
+```{r relax-lasso-cache}
+relax_cache <- "raw_data/modeling_andrew_relaxed_lasso.rds"
+
+run_relaxed_lasso <- function(res) {
+  df <- res$df
+  X <- model.matrix(as.formula(paste("~", paste(c(studied_z, controls), collapse = " + "))), data = df)[, -1]
+  y <- df$log_outcome
+  penalty <- ifelse(colnames(X) %in% studied_z, 1, 0)
+  set.seed(20260729)
+  cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty, relax = TRUE)
+}
+
+if (file.exists(relax_cache)) {
+  relaxed <- readRDS(relax_cache)
+} else {
+  relaxed <- list("2008" = run_relaxed_lasso(res_2008), "covid" = run_relaxed_lasso(res_covid))
+  saveRDS(relaxed, relax_cache)
+}
+relax_2008 <- relaxed[["2008"]]
+relax_covid <- relaxed[["covid"]]
+```
+
+### Best gamma and lambda from CV
+
+```{r relax-best-tuning}
+tibble(
+  crisis = c("2008", "covid"),
+  lambda_min = c(relax_2008$lambda.min, relax_covid$lambda.min),
+  gamma_min = c(relax_2008$relaxed$gamma.min, relax_covid$relaxed$gamma.min),
+  lambda_1se = c(relax_2008$lambda.1se, relax_covid$lambda.1se),
+  gamma_1se = c(relax_2008$relaxed$gamma.1se, relax_covid$relaxed$gamma.1se)
+)
+```
+
+### Coefficients at lambda.min and lambda.1se
+
+```{r relax-coefs}
+relax_coef <- function(res, s, gamma) as.matrix(coef(res, s = s, gamma = gamma))[, 1]
+
+relax_2008_min <- relax_coef(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
+relax_2008_1se <- relax_coef(relax_2008, relax_2008$lambda.1se, relax_2008$relaxed$gamma.1se)
+relax_covid_min <- relax_coef(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
+relax_covid_1se <- relax_coef(relax_covid, relax_covid$lambda.1se, relax_covid$relaxed$gamma.1se)
+
+tibble(term = names(relax_2008_min), coef_2008_min = relax_2008_min, coef_2008_1se = relax_2008_1se) %>%
+  left_join(tibble(term = names(relax_covid_min), coef_covid_min = relax_covid_min, coef_covid_1se = relax_covid_1se), by = "term")
+```
+
+### Standard LASSO vs. relaxed LASSO vs. OLS -- studied predictors only
+
+```{r relax-comparison-table}
+ols_coef <- function(res) summary(res$ols)$coefficients[studied_z, "Estimate"]
+
+three_way <- bind_rows(
+  tibble(term = studied_z, crisis = "2008", lambda_level = "min",
+         standard_lasso = res_2008$coef_min[studied_z], relaxed_lasso = relax_2008_min[studied_z], ols = ols_coef(res_2008)),
+  tibble(term = studied_z, crisis = "2008", lambda_level = "1se",
+         standard_lasso = res_2008$coef_1se[studied_z], relaxed_lasso = relax_2008_1se[studied_z], ols = ols_coef(res_2008)),
+  tibble(term = studied_z, crisis = "covid", lambda_level = "min",
+         standard_lasso = res_covid$coef_min[studied_z], relaxed_lasso = relax_covid_min[studied_z], ols = ols_coef(res_covid)),
+  tibble(term = studied_z, crisis = "covid", lambda_level = "1se",
+         standard_lasso = res_covid$coef_1se[studied_z], relaxed_lasso = relax_covid_1se[studied_z], ols = ols_coef(res_covid))
+) %>%
+  mutate(
+    dist_standard_to_ols = abs(standard_lasso - ols),
+    dist_relaxed_to_ols = abs(relaxed_lasso - ols),
+    relaxed_closer_to_ols = dist_relaxed_to_ols < dist_standard_to_ols,
+    newly_nonzero_under_relax = standard_lasso == 0 & relaxed_lasso != 0
+  )
+three_way %>% select(term, crisis, lambda_level, standard_lasso, relaxed_lasso, ols, relaxed_closer_to_ols, newly_nonzero_under_relax)
+```
+
+### CV error curves
+
+```{r relax-cv-plot-2008, fig.width=7, fig.height=5}
+plot(relax_2008)
+title("2008: relaxed LASSO CV error by lambda and gamma", line = 3)
+```
+
+```{r relax-cv-plot-covid, fig.width=7, fig.height=5}
+plot(relax_covid)
+title("COVID: relaxed LASSO CV error by lambda and gamma", line = 3)
+```
+
+## Presentation figures
+
+All seven figures below are built **only from objects already saved to
+disk** by the sections above (`modeling_andrew_results.rds`,
+`modeling_andrew_relaxed_lasso.rds`, `modeling_andrew_wealthband_fits.rds`,
+`modeling_andrew_placebo_fits.rds`) -- no model is refit here. (Two of those
+caches -- wealth-band and placebo fits -- didn't exist as standalone files
+before this section; they were only ever computed inline in Sections A/B
+above. They've been added to those sections' existing `file.exists()` cache
+pattern, consistent with every other model in this document, so this section
+itself only ever reads, never fits.)
+
+Colorblind-safe palette (validated categorical set): blue `#2a78d6`, orange
+`#eb6834`, aqua `#1baf7a` -- the first three slots, which validate against
+every pairing including when several appear in the same panel at once.
+A true 4th categorical hue (yellow) is avoided by design: paired with orange
+in an all-series-visible chart it fails the accessibility floor, so the
+`lasso_path` plot's 4th line uses ink + a dashed linetype instead of a 4th
+hue. Wealth bands use a single-hue **sequential** ramp (light->dark blue)
+rather than 3 unrelated categorical hues, since the bands are ordinal
+(lower < middle < higher), not nominal.
+
+```{r figures-setup}
+library(ggplot2)
+
+dir.create("figures", showWarnings = FALSE)
+
+studied_labels <- c(proprietor_share_z = "Self-employment", migration_rate_z = "Migration rate",
+                     unemployment_rate_z = "Unemployment rate", working_age_share_z = "Working-age share")
+pal <- c(blue = "#2a78d6", orange = "#eb6834", aqua = "#1baf7a", yellow = "#eda100")
+seq_blue <- c(lower = "#86b6ef", middle = "#2a78d6", higher = "#104281")
+
+# base_size 14+, minimal gridlines (vertical only, hairline), no in-plot
+# title (titles live on the slide, not the PNG), legend below
+theme_pub <- function(base_size = 14) {
+  theme_minimal(base_size = base_size) +
+    theme(panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(color = "#e1e0d9", linewidth = 0.3),
+          strip.text = element_text(face = "bold", size = rel(0.95)), plot.title = element_blank(),
+          legend.position = "bottom", axis.title = element_text(size = rel(0.9)))
+}
+
+ols_ci_table <- function(res, crisis_label) {
+  s <- summary(res$ols)$coefficients[studied_z, ]
+  tibble(term = studied_z, estimate = s[, "Estimate"], ci_low = s[, "CI Lower"], ci_high = s[, "CI Upper"], crisis = crisis_label)
+}
+```
+
+### 1. coefficient_plot.png
+
+```{r fig-coefficient-plot, fig.width=10, fig.height=6}
+coef_data <- bind_rows(ols_ci_table(res_2008, "2008"), ols_ci_table(res_covid, "COVID")) %>%
+  mutate(predictor = factor(studied_labels[term], levels = rev(studied_labels)))
+
+p1 <- ggplot(coef_data, aes(x = estimate, y = predictor)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_pointrange(aes(xmin = ci_low, xmax = ci_high), color = unname(pal["blue"]), linewidth = 0.8, size = 0.6) +
+  facet_wrap(~crisis) +
+  labs(x = "OLS coefficient (log recovery ratio per 1 SD), 95% CI (HC1 robust SE)", y = NULL) +
+  theme_pub()
+ggsave("figures/coefficient_plot.png", p1, width = 10, height = 6, dpi = 300)
+p1
+```
+
+### 2. method_agreement.png
+
+```{r fig-method-agreement, fig.width=10, fig.height=6}
+relax_coef_vec <- function(res, s, gamma) as.matrix(coef(res, s = s, gamma = gamma))[, 1]
+relax_2008_min <- relax_coef_vec(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
+relax_covid_min <- relax_coef_vec(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
+
+method_data <- bind_rows(
+  ols_ci_table(res_2008, "2008") %>% mutate(method = "OLS"),
+  ols_ci_table(res_covid, "COVID") %>% mutate(method = "OLS"),
+  tibble(term = studied_z, estimate = res_2008$coef_min[studied_z], ci_low = NA, ci_high = NA, crisis = "2008", method = "Standard LASSO"),
+  tibble(term = studied_z, estimate = res_covid$coef_min[studied_z], ci_low = NA, ci_high = NA, crisis = "COVID", method = "Standard LASSO"),
+  tibble(term = studied_z, estimate = relax_2008_min[studied_z], ci_low = NA, ci_high = NA, crisis = "2008", method = "Relaxed LASSO"),
+  tibble(term = studied_z, estimate = relax_covid_min[studied_z], ci_low = NA, ci_high = NA, crisis = "COVID", method = "Relaxed LASSO")
+) %>%
+  mutate(predictor = factor(studied_labels[term], levels = rev(studied_labels)),
+         method = factor(method, levels = c("OLS", "Standard LASSO", "Relaxed LASSO")))
+
+dodge_width <- 0.6
+method_colors <- c("OLS" = unname(pal["blue"]), "Standard LASSO" = unname(pal["orange"]), "Relaxed LASSO" = unname(pal["aqua"]))
+p2 <- ggplot(method_data, aes(x = estimate, y = predictor, color = method, shape = method)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high), width = 0.15, linewidth = 0.6, orientation = "y",
+                position = position_dodge(width = dodge_width), na.rm = TRUE) +
+  geom_point(size = 3, position = position_dodge(width = dodge_width)) +
+  scale_color_manual(values = method_colors, name = NULL) +
+  scale_shape_manual(values = c("OLS" = 16, "Standard LASSO" = 17, "Relaxed LASSO" = 15), name = NULL) +
+  facet_wrap(~crisis) +
+  labs(x = "Coefficient (lambda.min for LASSO variants)", y = NULL) +
+  theme_pub()
+ggsave("figures/method_agreement.png", p2, width = 10, height = 6, dpi = 300)
+p2
+```
+
+### 3. lasso_path.png
+
+Excludes controls (unpenalized, flat lines add no information). Only 3
+predictors get a categorical hue -- see the palette note above for why the
+4th (working-age share) is ink + dashed instead of a 4th hue.
+
+```{r fig-lasso-path, fig.width=10, fig.height=6}
+path_line_colors <- c("Self-employment" = unname(pal["blue"]), "Migration rate" = unname(pal["orange"]),
+                       "Unemployment rate" = unname(pal["aqua"]), "Working-age share" = "#2b2b2b")
+path_linetypes <- c("Self-employment" = "solid", "Migration rate" = "solid",
+                     "Unemployment rate" = "solid", "Working-age share" = "dashed")
+
+extract_path <- function(res, crisis_label) {
+  co <- as.matrix(coef(res$cvfit$glmnet.fit))
+  lambda <- res$cvfit$glmnet.fit$lambda
+  map_dfr(studied_z, function(v) {
+    tibble(term = v, predictor = studied_labels[v], log_lambda = log(lambda), coef = co[v, ], crisis = crisis_label)
+  }) %>%
+    mutate(lambda_min = res$cvfit$lambda.min, lambda_1se = res$cvfit$lambda.1se)
+}
+path_data <- bind_rows(extract_path(res_2008, "2008"), extract_path(res_covid, "COVID"))
+
+# direct labels at the left edge, positioned using EACH FACET'S OWN data
+# range (facets use free_x scales with very different lambda ranges)
+label_data <- path_data %>% group_by(crisis, predictor) %>% slice_min(log_lambda, n = 1) %>% ungroup()
+facet_ranges <- path_data %>% group_by(crisis) %>% summarise(x_range = max(log_lambda) - min(log_lambda), .groups = "drop")
+label_data <- label_data %>% left_join(facet_ranges, by = "crisis") %>% mutate(label_x = log_lambda - 0.03 * x_range)
+
+vline_data <- path_data %>% distinct(crisis, lambda_min, lambda_1se) %>%
+  pivot_longer(c(lambda_min, lambda_1se), names_to = "which", values_to = "lambda") %>%
+  mutate(log_lambda = log(lambda))
+
+p3 <- ggplot(path_data, aes(x = log_lambda, y = coef, color = predictor, linetype = predictor)) +
+  geom_vline(data = vline_data, aes(xintercept = log_lambda), color = "#898781", linewidth = 0.4, linetype = "dotted") +
+  geom_hline(yintercept = 0, color = "#c3c2b7", linewidth = 0.4) +
+  geom_line(linewidth = 0.9) +
+  geom_text(data = label_data, aes(x = label_x, y = coef, label = predictor), hjust = 1, size = 3.6, show.legend = FALSE) +
+  scale_color_manual(values = path_line_colors, guide = "none") +
+  scale_linetype_manual(values = path_linetypes, guide = "none") +
+  scale_x_continuous(expand = expansion(mult = c(0.42, 0.05))) +
+  facet_wrap(~crisis, scales = "free_x") +
+  labs(x = "log(lambda) -- dotted lines mark lambda.min and lambda.1se", y = "Standardized coefficient") +
+  theme_pub()
+ggsave("figures/lasso_path.png", p3, width = 10, height = 6, dpi = 300)
+p3
+```
+
+### 4. rf_importance.png
+
+Model 3b only (no income/poverty) -- model 3a's importance is deliberately
+never computed, per the rule in that section.
+
+```{r fig-rf-importance, fig.width=10, fig.height=6}
+rf_imp_table <- function(res, crisis_label) {
+  imp <- importance(res$rf_b, type = 1)
+  var_labels <- c(studied_labels, log_population = "log(population)", log_density = "log(density)",
+                   rucc = "RUCC", pop_trend = "Population trend")
+  tibble(term = rownames(imp), pct_inc_mse = imp[, 1], crisis = crisis_label) %>%
+    mutate(label = var_labels[term], is_studied = term %in% studied_z)
+}
+rf_data <- bind_rows(rf_imp_table(res_2008, "2008"), rf_imp_table(res_covid, "COVID"))
+# fct_reorder() alone shares ONE bar order across facets -- key on
+# label+crisis so each panel sorts by its OWN values, then strip the
+# crisis suffix back off the displayed tick labels
+rf_data <- rf_data %>% mutate(label_key = fct_reorder(paste0(label, "___", crisis), pct_inc_mse))
+
+p4 <- ggplot(rf_data, aes(x = pct_inc_mse, y = label_key, fill = is_studied)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = c("TRUE" = unname(pal["blue"]), "FALSE" = "#c3c2b7"), guide = "none") +
+  scale_y_discrete(labels = function(x) sub("___.*", "", x)) +
+  facet_wrap(~crisis, scales = "free_y") +
+  labs(x = "Permutation importance (% increase in MSE when shuffled)", y = NULL) +
+  theme_pub()
+ggsave("figures/rf_importance.png", p4, width = 10, height = 6, dpi = 300)
+p4
+```
+
+### 5. predictability.png
+
+```{r fig-predictability, fig.width=10, fig.height=6}
+pred_data <- tibble(
+  model = factor(c("2008", "COVID", "Placebo\n(2014-2017)"), levels = c("2008", "COVID", "Placebo\n(2014-2017)")),
+  oob_r_squared = c(res_2008$rf_a$rsq[500], res_covid$rf_a$rsq[500], placebo_rf$rsq[500]),
+  oob_rmse = c(sqrt(res_2008$rf_a$mse[500]), sqrt(res_covid$rf_a$mse[500]), sqrt(placebo_rf$mse[500]))
+) %>% pivot_longer(-model, names_to = "metric", values_to = "value") %>%
+  mutate(metric = recode(metric, oob_r_squared = "OOB R-squared", oob_rmse = "OOB RMSE (log scale)"))
+
+model_colors <- c("2008" = unname(pal["blue"]), "COVID" = unname(pal["orange"]), "Placebo\n(2014-2017)" = unname(pal["aqua"]))
+p5 <- ggplot(pred_data, aes(x = model, y = value, fill = model)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = ifelse(metric == "OOB R-squared", scales::percent(value, accuracy = 0.1), sprintf("%.3f", value))),
+            vjust = -0.5, size = 4) +
+  scale_fill_manual(values = model_colors, guide = "none") +
+  facet_wrap(~metric, scales = "free_y") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(x = NULL, y = NULL) +
+  theme_pub()
+ggsave("figures/predictability.png", p5, width = 10, height = 6, dpi = 300)
+p5
+```
+
+### 6. outcome_distributions.png
+
+```{r fig-outcome-distributions, fig.width=10, fig.height=6}
+outcome_data <- bind_rows(
+  tibble(log_ratio = log(res_2008$df$outcome_raw), crisis = "2008"),
+  tibble(log_ratio = log(res_covid$df$outcome_raw), crisis = "COVID")
+)
+sd_labels <- outcome_data %>% group_by(crisis) %>%
+  summarise(sd_val = sd(log_ratio), x_pos = max(log_ratio) * 0.6, .groups = "drop")
+
+p6 <- ggplot(outcome_data, aes(x = log_ratio)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, fill = unname(pal["blue"]), alpha = 0.85) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#2b2b2b", linewidth = 0.6) +
+  geom_text(data = sd_labels, aes(x = x_pos, y = Inf, label = sprintf("SD = %.3f", sd_val)),
+            vjust = 1.5, size = 4.2, inherit.aes = FALSE) +
+  facet_wrap(~crisis) +
+  labs(x = "log(recovery ratio) -- 0 marks exactly recovered", y = "Density") +
+  theme_pub()
+ggsave("figures/outcome_distributions.png", p6, width = 10, height = 6, dpi = 300)
+p6
+```
+
+### 7. wealth_bands.png
+
+Band coefficients use a single-hue **sequential** ramp (light->dark),
+since the three bands are ordinal, not an unordered category set.
+
+```{r fig-wealth-bands, fig.width=10, fig.height=6}
+bands <- c("lower", "middle", "higher")
+band_table <- imap_dfr(band_fits, function(crisis_fits, crisis) {
+  imap_dfr(crisis_fits, function(fit, band) {
+    s <- summary(fit)$coefficients[studied_z, ]
+    as_tibble(s, rownames = "term") %>%
+      rename(estimate = Estimate, ci_low = `CI Lower`, ci_high = `CI Upper`) %>%
+      mutate(crisis = recode(crisis, "2008" = "2008", "covid" = "COVID"), band = band)
+  })
+}) %>%
+  mutate(predictor = factor(studied_labels[term], levels = rev(studied_labels)),
+         band = factor(band, levels = bands, labels = c("Lower third", "Middle third", "Higher third")))
+
+dodge_w <- 0.6
+p7 <- ggplot(band_table, aes(x = estimate, y = predictor, color = band)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high), width = 0.15, linewidth = 0.7,
+                orientation = "y", position = position_dodge(width = dodge_w)) +
+  geom_point(size = 3, position = position_dodge(width = dodge_w)) +
+  scale_color_manual(values = c("Lower third" = unname(seq_blue["lower"]), "Middle third" = unname(seq_blue["middle"]),
+                                 "Higher third" = unname(seq_blue["higher"])), name = "Income tercile") +
+  facet_wrap(~crisis) +
+  labs(x = "OLS coefficient (log recovery ratio per 1 SD), 95% CI (HC1 robust SE)", y = NULL) +
+  theme_pub()
+ggsave("figures/wealth_bands.png", p7, width = 10, height = 6, dpi = 300)
+p7
+```
+
+### 8. relaxed_lasso.png
+
+Relaxed LASSO alone (no OLS/standard-LASSO overlay -- that comparison is
+already `method_agreement.png`). Reuses `relax_2008_min` / `relax_covid_min`,
+already computed in the method-agreement chunk above from the cached
+`modeling_andrew_relaxed_lasso.rds` -- no refit here.
+
+```{r fig-relaxed-lasso, fig.width=10, fig.height=6}
+relax_solo_data <- bind_rows(
+  tibble(term = studied_z, estimate = relax_2008_min[studied_z], crisis = "2008"),
+  tibble(term = studied_z, estimate = relax_covid_min[studied_z], crisis = "COVID")
+) %>%
+  mutate(predictor = factor(studied_labels[term], levels = rev(studied_labels)))
+
+p8 <- ggplot(relax_solo_data, aes(x = estimate, y = predictor)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_point(color = unname(pal["blue"]), size = 3.2) +
+  geom_text(aes(label = sprintf("%.4f", estimate)), vjust = -1.3, size = 3.8) +
+  facet_wrap(~crisis) +
+  scale_x_continuous(expand = expansion(mult = c(0.25, 0.25))) +
+  labs(x = "Relaxed LASSO coefficient (lambda.min)", y = NULL) +
+  theme_pub()
+ggsave("figures/relaxed_lasso.png", p8, width = 10, height = 6, dpi = 300)
+p8
+```
+
+### 9. lasso_cv_curve.png
+
+Standard (non-relaxed) LASSO's CV curve -- the classic `plot(cv.glmnet(...))`
+shape, rebuilt in ggplot to match this deck's style. Reads `res_2008$cvfit` /
+`res_covid$cvfit`, already fit in the `run-crisis-models` chunk from cached
+`modeling_andrew_results.rds` -- no refit here. Only the 4 studied predictors
+are penalized (`penalty.factor = 0` on all 6 controls), so `nzero` only
+ranges 13-17 across the whole path, not down to 0 -- the curve is flat until
+the last studied predictors get dropped, unlike a fully-penalized textbook
+example.
+
+```{r fig-lasso-cv-curve, fig.width=10, fig.height=6}
+extract_cv_curve <- function(res, crisis_label) {
+  cv <- res$cvfit
+  tibble(log_lambda = log(cv$lambda), cvm = cv$cvm, cvup = cv$cvup, cvlo = cv$cvlo,
+         nzero = cv$nzero, crisis = crisis_label) %>%
+    mutate(lambda_min = cv$lambda.min, lambda_1se = cv$lambda.1se)
+}
+cv_curve_data <- bind_rows(extract_cv_curve(res_2008, "2008"), extract_cv_curve(res_covid, "COVID"))
+
+cv_vline_data <- cv_curve_data %>% distinct(crisis, lambda_min, lambda_1se) %>%
+  pivot_longer(c(lambda_min, lambda_1se), names_to = "which", values_to = "lambda") %>%
+  mutate(log_lambda = log(lambda))
+
+# nonzero-predictor count labeled every 5th lambda along the top, echoing the
+# base-R plot.cv.glmnet() convention (top-axis nzero counts)
+nzero_labels <- cv_curve_data %>% group_by(crisis) %>% slice(seq(1, n(), by = 5)) %>% ungroup()
+
+p9 <- ggplot(cv_curve_data, aes(x = log_lambda, y = cvm)) +
+  geom_vline(data = cv_vline_data, aes(xintercept = log_lambda), color = "#898781", linewidth = 0.4, linetype = "dotted") +
+  geom_errorbar(aes(ymin = cvlo, ymax = cvup), color = "#c3c2b7", width = 0, linewidth = 0.4) +
+  geom_point(color = unname(pal["blue"]), size = 1.6) +
+  geom_text(data = nzero_labels, aes(label = nzero), y = Inf, vjust = 1.6, size = 3, color = "#5b5a54") +
+  facet_wrap(~crisis, scales = "free") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
+  labs(x = "log(lambda) -- dotted lines mark lambda.min and lambda.1se; numbers = predictors kept",
+       y = "Mean-Squared Error (10-fold CV)") +
+  theme_pub()
+ggsave("figures/lasso_cv_curve.png", p9, width = 10, height = 6, dpi = 300)
+p9
+```
