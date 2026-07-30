@@ -17,6 +17,10 @@ library(estimatr)   # lm_robust, HC1 SEs
 library(glmnet)
 library(randomForest)
 
+# Document-wide seed. Every stochastic fit below (LASSO's CV fold assignment,
+# each random forest) also calls set.seed(20260729) again immediately before
+# it runs, so this top-level call mostly documents the constant in one place;
+# it isn't relied on to carry state across chunks.
 set.seed(20260729)
 
 county <- read_csv("spine_data.csv", show_col_types = FALSE)
@@ -32,7 +36,9 @@ which year's columns feed the same function.
 
 ```{r crisis-cols}
 # The ONE crisis-specific thing in this whole document: which source column
-# maps to which generic name, per crisis.
+# maps to which generic name, per crisis. Everything downstream (formulas,
+# fits, tables, figures) is written once against the generic names below and
+# never branches on `crisis` again after prepare_crisis_data() runs.
 crisis_cols <- list(
   "2008" = c(outcome = "recovery_ratio_2008", flag_tiny = "flag_tiny_base_2008",
              proprietor_share = "proprietor_share_2007", migration_rate = "net_migration_rate_2007",
@@ -53,6 +59,10 @@ crisis_cols <- list(
 # standardized -- they're not being interpreted, only held constant.
 prepare_crisis_data <- function(raw, crisis) {
   cols <- crisis_cols[[crisis]]
+
+  # Step 1: pull this crisis's year-specific columns into the generic names
+  # every later chunk expects (e.g. "proprietor_share", not
+  # "proprietor_share_2007" or "proprietor_share_2019").
   raw %>%
     transmute(
       fips, county_name,
@@ -69,8 +79,14 @@ prepare_crisis_data <- function(raw, crisis) {
       rucc_raw = .data[[cols[["rucc"]]]],
       pop_trend = .data[[cols[["pop_trend"]]]]
     ) %>%
+    # Step 2: complete-case filter -- a county missing ANY of these columns
+    # is dropped from this crisis's modeling sample entirely.
     filter(if_all(c(outcome_raw, proprietor_share, migration_rate, unemployment_rate, working_age_share,
                      income, poverty_rate, population, density, rucc_raw, pop_trend), ~ !is.na(.))) %>%
+    # Step 3: derived columns used by the models -- log transforms, the RUCC
+    # factor (release 1 = reference), and the standardized (z-scored)
+    # versions of the 4 studied predictors, scaled WITHIN this crisis's own
+    # complete-case sample (not against the other crisis or the full spine).
     mutate(
       log_outcome = log(outcome_raw),
       log_population = log(population),
@@ -88,36 +104,73 @@ controls  <- c("income", "poverty_rate", "log_population", "log_density", "rucc"
 controls_no_wealth <- setdiff(controls, c("income", "poverty_rate"))
 ```
 
+```{r formula-helpers}
+# Two small formula builders, factored out because this exact string-paste
+# pattern was previously repeated verbatim at every fit site in this document
+# (OLS, both random forests, the LASSO design matrix, the wealth-band and
+# placebo refits, and the relaxed-LASSO section). Both produce byte-identical
+# formula objects to the inline `as.formula(paste(...))` calls they replace --
+# same predictor order in, same formula text out.
+
+# "log_outcome ~ <predictor_vars>", for lm_robust()/randomForest() calls that
+# need a response on the left-hand side.
+build_model_formula <- function(predictor_vars) {
+  as.formula(paste("log_outcome ~", paste(predictor_vars, collapse = " + ")))
+}
+
+# "~ <predictor_vars>", response-free, for model.matrix() calls that only
+# need the right-hand side (used to build glmnet's design matrix).
+build_design_matrix_formula <- function(predictor_vars) {
+  as.formula(paste("~", paste(predictor_vars, collapse = " + ")))
+}
+```
+
 ```{r run-crisis-models}
 # Everything below is written once and driven by `crisis`; no 2008 block
-# copy-pasted into a COVID block.
-run_crisis_models <- function(raw, crisis) {
-  df <- prepare_crisis_data(raw, crisis)
+# copy-pasted into a COVID block. run_crisis_models() calls one small helper
+# per model type (fit_primary_ols, fit_primary_lasso, fit_primary_rf) so each
+# fit's logic can be read (and, if ever needed, tested) in isolation, then
+# assembles their outputs into the single per-crisis result list everything
+# downstream reads from.
 
-  ## 1. Pooled OLS, HC1 robust SEs (diagnostics showed migration variance
-  ## fanning out in small-population counties -- default SEs would be wrong)
-  ols_formula <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
-  ols <- lm_robust(ols_formula, data = df, se_type = "HC1")
+# 1. Pooled OLS, HC1 robust SEs (diagnostics showed migration variance
+# fanning out in small-population counties -- default SEs would be wrong).
+fit_primary_ols <- function(df) {
+  ols_formula <- build_model_formula(c(studied_z, controls))
+  lm_robust(ols_formula, data = df, se_type = "HC1")
+}
 
-  ## 2. LASSO -- controls (incl. all 8 RUCC dummies) unpenalized, studied
-  ## predictors penalized. penalty.factor = 0 keeps a control in the model
-  ## regardless of magnitude, so "holding X constant" stays true.
-  X <- model.matrix(as.formula(paste("~", paste(c(studied_z, controls), collapse = " + "))), data = df)[, -1]
+# 2. LASSO -- controls (incl. all 8 RUCC dummies) unpenalized, studied
+# predictors penalized. penalty.factor = 0 keeps a control in the model
+# regardless of magnitude, so "holding X constant" stays true.
+fit_primary_lasso <- function(df) {
+  X <- model.matrix(build_design_matrix_formula(c(studied_z, controls)), data = df)[, -1]
   y <- df$log_outcome
   penalty <- ifelse(colnames(X) %in% studied_z, 1, 0)
   set.seed(20260729)
-  cvfit <- cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty)
+  cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty)
+}
 
-  ## 3a. RF WITH controls incl. income/poverty -- prediction accuracy only.
-  rf_formula_a <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
+# 3. Random forest, 500 trees. `wealth_controls` toggles between the two
+# specs this document always runs side by side:
+#   - WITH income/poverty (wealth_controls = controls): prediction accuracy
+#     only, importance never computed for this one.
+#   - WITHOUT income/poverty (wealth_controls = controls_no_wealth): so the
+#     4 studied predictors compete against each other and the remaining
+#     controls, not against wealth. Permutation importance computed here.
+fit_primary_rf <- function(df, wealth_controls, compute_importance) {
+  rf_formula <- build_model_formula(c(studied_z, wealth_controls))
   set.seed(20260729)
-  rf_a <- randomForest(rf_formula_a, data = df, ntree = 500, importance = FALSE)
+  randomForest(rf_formula, data = df, ntree = 500, importance = compute_importance)
+}
 
-  ## 3b. RF WITHOUT income/poverty -- so the 4 studied predictors compete
-  ## against each other and the remaining controls, not against wealth.
-  rf_formula_b <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls_no_wealth), collapse = " + ")))
-  set.seed(20260729)
-  rf_b <- randomForest(rf_formula_b, data = df, ntree = 500, importance = TRUE)
+run_crisis_models <- function(raw, crisis) {
+  df <- prepare_crisis_data(raw, crisis)
+
+  ols <- fit_primary_ols(df)
+  cvfit <- fit_primary_lasso(df)
+  rf_a <- fit_primary_rf(df, controls, compute_importance = FALSE)
+  rf_b <- fit_primary_rf(df, controls_no_wealth, compute_importance = TRUE)
 
   list(crisis = crisis, df = df, n = nrow(df), ols = ols, cvfit = cvfit,
        coef_min = as.matrix(coef(cvfit, s = "lambda.min"))[, 1],
@@ -259,8 +312,11 @@ These are checks on the primary result, not a replacement for it.
 # doesn't break by comparing different populations.
 tiny_union_fips <- county %>% filter(flag_tiny_base_2008 | flag_tiny_base_covid) %>% pull(fips)
 
-run_ols_variant <- function(df, formula_rhs = paste(c(studied_z, controls), collapse = " + ")) {
-  lm_robust(as.formula(paste("log_outcome ~", formula_rhs)), data = df, se_type = "HC1")
+# Same primary-spec formula as fit_primary_ols() above, reused here (and by
+# the wealth-band section below) for the robustness re-fits on filtered/
+# transformed subsets of each crisis's data.
+run_ols_variant <- function(df) {
+  lm_robust(build_model_formula(c(studied_z, controls)), data = df, se_type = "HC1")
 }
 
 ols_notiny_2008 <- run_ols_variant(res_2008$df %>% filter(!fips %in% tiny_union_fips))
@@ -586,7 +642,7 @@ placebo_df <- pieces$outcome_placebo %>%
 
 cat("Placebo complete-case n:", nrow(placebo_df), "\n")
 
-placebo_formula <- as.formula(paste("log_outcome ~", paste(c(studied_z, controls), collapse = " + ")))
+placebo_formula <- build_model_formula(c(studied_z, controls))
 placebo_fits_cache <- "raw_data/modeling_andrew_placebo_fits.rds"
 if (file.exists(placebo_fits_cache)) {
   placebo_fits <- readRDS(placebo_fits_cache)
@@ -627,7 +683,7 @@ relax_cache <- "raw_data/modeling_andrew_relaxed_lasso.rds"
 
 run_relaxed_lasso <- function(res) {
   df <- res$df
-  X <- model.matrix(as.formula(paste("~", paste(c(studied_z, controls), collapse = " + "))), data = df)[, -1]
+  X <- model.matrix(build_design_matrix_formula(c(studied_z, controls)), data = df)[, -1]
   y <- df$log_outcome
   penalty <- ifelse(colnames(X) %in% studied_z, 1, 0)
   set.seed(20260729)
@@ -773,9 +829,11 @@ p1
 ### 2. method_agreement.png
 
 ```{r fig-method-agreement, fig.width=10, fig.height=6}
-relax_coef_vec <- function(res, s, gamma) as.matrix(coef(res, s = s, gamma = gamma))[, 1]
-relax_2008_min <- relax_coef_vec(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
-relax_covid_min <- relax_coef_vec(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
+# relax_coef() is already defined above (relax-coefs chunk) -- reused here
+# rather than redefined, so there's exactly one copy of this coefficient
+# extractor in the document instead of two functions with identical bodies.
+relax_2008_min <- relax_coef(relax_2008, relax_2008$lambda.min, relax_2008$relaxed$gamma.min)
+relax_covid_min <- relax_coef(relax_covid, relax_covid$lambda.min, relax_covid$relaxed$gamma.min)
 
 method_data <- bind_rows(
   ols_ci_table(res_2008, "2008") %>% mutate(method = "OLS"),
@@ -933,6 +991,13 @@ Band coefficients use a single-hue **sequential** ramp (light->dark),
 since the three bands are ordinal, not an unordered category set.
 
 ```{r fig-wealth-bands, fig.width=10, fig.height=6}
+# Deliberately rebuilds `band_table` rather than reusing the one from the
+# wealthband-fit chunk above: this version recodes crisis to "COVID" and
+# relabels `band` as a display-friendly ordered factor ("Lower third", etc.)
+# for the plot's legend, whereas the earlier `band_table` (still used by the
+# text-table sections above) keeps the plain "covid"/"lower" values those
+# sections filter and join on. Same underlying `band_fits`, display-only
+# difference.
 bands <- c("lower", "middle", "higher")
 band_table <- imap_dfr(band_fits, function(crisis_fits, crisis) {
   imap_dfr(crisis_fits, function(fit, band) {
