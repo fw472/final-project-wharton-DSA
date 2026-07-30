@@ -1,0 +1,3 @@
+geography,crisis,validation,observations,predictors,mtry,RMSE,MAE,R_squared,nodesize
+State,Great Recession,Out-of-bag,51,31,6,0.02184935236747792,0.016773956137370826,0.10814502237332035,5
+State,COVID-19,Out-of-bag,51,31,16,0.021907362605785095,0.0171259265393946,0.41881310713807474,1

@@ -1,0 +1,63 @@
+geography,crisis,predictor,importance,predictor_label
+State,Great Recession,poverty_rate,1.5666785738186197,Poverty rate
+State,Great Recession,median_hh_income,0.33161354854887054,Median hh income
+State,Great Recession,total_population,4.475709900437299,Total population
+State,Great Recession,rurality,3.193066017460582,Rurality
+State,Great Recession,proprietor_share,3.889645684237445,Proprietor share
+State,Great Recession,net_migration_rate,1.2804791398054594,Net migration rate
+State,Great Recession,pct_hs_plus,0.9294689772926846,Percent hs plus
+State,Great Recession,pct_bachelors_plus,6.566097550760993,Percent bachelors plus
+State,Great Recession,birth_rate,1.948742334515777,Birth rate
+State,Great Recession,working_age_share,4.107276067873498,Working age share
+State,Great Recession,share_agriculture,2.024271836738986,Share agriculture
+State,Great Recession,share_mining,2.1543314617900595,Share mining
+State,Great Recession,share_utilities,1.2482412500549096,Share utilities
+State,Great Recession,share_construction,-1.2150557870411318,Share construction
+State,Great Recession,share_manufacturing,2.63683517344491,Share manufacturing
+State,Great Recession,share_wholesale_trade,0.2161712235590369,Share wholesale trade
+State,Great Recession,share_retail,0.9961693441363494,Share retail
+State,Great Recession,share_transportation,-0.16473215676237077,Share transportation
+State,Great Recession,share_information,13.713768857143071,Share information
+State,Great Recession,share_finance,-0.31818444083013164,Share finance
+State,Great Recession,share_real_estate,1.6921499952034027,Share real estate
+State,Great Recession,share_professional_services,1.3758733413396156,Share professional services
+State,Great Recession,share_management,-0.06447022166176505,Share management
+State,Great Recession,share_administrative_waste,-0.3358649195475062,Share administrative waste
+State,Great Recession,share_education_services,0.07998564421852902,Share education services
+State,Great Recession,share_healthcare,0.22370823404055376,Share healthcare
+State,Great Recession,share_arts_entertainment,-0.3922321360272725,Share arts entertainment
+State,Great Recession,share_accommodation_food,-0.07789138845558363,Share accommodation food
+State,Great Recession,share_other_services,0.37153798723960746,Share other services
+State,Great Recession,pop_trend,-1.977325522409204,Pop trend
+State,Great Recession,log_density,5.010575223043894,Log density
+State,COVID-19,poverty_rate,-1.5812326675004462,Poverty rate
+State,COVID-19,median_hh_income,0.42136144207842324,Median hh income
+State,COVID-19,total_population,-0.388418830459149,Total population
+State,COVID-19,rurality,-0.02982421122133972,Rurality
+State,COVID-19,proprietor_share,4.355073034402074,Proprietor share
+State,COVID-19,net_migration_rate,41.68350368131342,Net migration rate
+State,COVID-19,pct_hs_plus,-0.3075631975723108,Percent hs plus
+State,COVID-19,pct_bachelors_plus,-0.18438661283330618,Percent bachelors plus
+State,COVID-19,birth_rate,1.6358738019233485,Birth rate
+State,COVID-19,working_age_share,9.391568768143655,Working age share
+State,COVID-19,share_agriculture,-0.6282845455392374,Share agriculture
+State,COVID-19,share_mining,1.5303756665124335,Share mining
+State,COVID-19,share_utilities,0.913384837980201,Share utilities
+State,COVID-19,share_construction,0.6190393505936912,Share construction
+State,COVID-19,share_manufacturing,0.6085939139904024,Share manufacturing
+State,COVID-19,share_wholesale_trade,0.05054488550483613,Share wholesale trade
+State,COVID-19,share_retail,0.3147663715706132,Share retail
+State,COVID-19,share_transportation,-0.897701149122118,Share transportation
+State,COVID-19,share_information,-0.031275198007626986,Share information
+State,COVID-19,share_finance,0.594744299055595,Share finance
+State,COVID-19,share_real_estate,1.2172226177203873,Share real estate
+State,COVID-19,share_professional_services,0.6959101686954277,Share professional services
+State,COVID-19,share_management,0.5746310157380252,Share management
+State,COVID-19,share_administrative_waste,1.0917458502713766,Share administrative waste
+State,COVID-19,share_education_services,5.517791433852207,Share education services
+State,COVID-19,share_healthcare,-0.8236107573928761,Share healthcare
+State,COVID-19,share_arts_entertainment,0.27179501911366666,Share arts entertainment
+State,COVID-19,share_accommodation_food,1.7624535819310154,Share accommodation food
+State,COVID-19,share_other_services,0.05043364922351068,Share other services
+State,COVID-19,pop_trend,60.30930152518205,Pop trend
+State,COVID-19,log_density,1.3508105565105173,Log density
