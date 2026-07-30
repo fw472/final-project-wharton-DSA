@@ -1,0 +1,17 @@
+geography,crisis,predictor,importance,predictor_label
+County,Great Recession,poverty_rate,30.755569614130046,Poverty rate
+County,Great Recession,median_hh_income,51.08573215312187,Median hh income
+County,Great Recession,proprietor_share,13.611648769281134,Proprietor share
+County,Great Recession,net_migration_rate,5.673100185409242,Net migration rate
+County,Great Recession,birth_rate,12.349425129921915,Birth rate
+County,Great Recession,rurality,6.539226684099804,Rurality
+County,Great Recession,log_population,20.53145303823442,Log population
+County,Great Recession,log_density,13.053527486848873,Log density
+County,COVID-19,poverty_rate,11.540451227871841,Poverty rate
+County,COVID-19,median_hh_income,21.273054579849216,Median hh income
+County,COVID-19,proprietor_share,22.096977522682252,Proprietor share
+County,COVID-19,net_migration_rate,55.14662649609209,Net migration rate
+County,COVID-19,birth_rate,7.30137223212883,Birth rate
+County,COVID-19,rurality,13.522679498168173,Rurality
+County,COVID-19,log_population,17.51028792537863,Log population
+County,COVID-19,log_density,16.535081966861107,Log density
