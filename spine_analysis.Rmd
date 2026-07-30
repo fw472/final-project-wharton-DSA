@@ -1,0 +1,959 @@
+---
+title: "Bouncing Back: Predicting an Economy’s Recovery"
+author:
+- Fiona Wu
+- Andrew Sergeyev
+- Lucy Zhou
+- Sasha Kourakin
+- Hejia Jiang
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 7
+)
+options(scipen = 0, digits = 3)
+
+required_packages <- c(
+  "readr",
+  "dplyr",
+  "ggplot2",
+  "scales",
+  "usmap",
+  "patchwork",
+  "GGally"
+)
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0L) {
+  stop(
+    "Install the missing packages before rendering: ",
+    paste(missing_packages, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(usmap)
+library(patchwork)
+library(GGally)
+```
+
+\pagebreak
+
+#  Abstract
+
+
+# Introduction 
+
+:::: {.columns}
+
+::: {.column width="50%"}
+In 2008, the United States experienced the Great Recession, one of the most severe economic downturns since the Great Depression. The collapse of the housing market and widespread job losses affected communities across the country. Unemployment rates doubled, and businesses struggled as the stock market declined. The S&P 500 fell by 38.49% during the 2008 calendar year, marking its worst annual percentage loss in history.
+:::
+
+::: {.column width="6%"}
+<!-- Empty gutter -->
+:::
+
+::: {.column width="44%"}
+![](figures/sp500_covid_crash_model.png){width=100%}
+:::
+
+::::
+
+Comparably, in 2019, the COVID-19 pandemic triggered another major economic disruption, resulting in widespread business closures, job losses, and significant changes to local economies. Following the pandemic, inflation became one of the largest economic challenges, driven by supply chain disruptions, increased consumer demand, and rising energy costs. In 2022, U.S. inflation reached 9.1%, the highest annual increase since 1981, causing prices for essential goods, including oil, housing, and household supplies, to rise substantially.
+
+After both crises, some regions in the United States demonstrated remarkable resilience, quickly rebuilding their economies and improving living conditions. In contrast, others remained trapped in cycles of economic hardship. This raises an important question: what factors determine whether a county can bounce back after a major crisis?
+
+# Data EDA
+```{r data-setup, results='asis'}
+data_directory <- "data"
+
+locate_data_file <- function(file_name) {
+  candidates <- c(
+    file.path(data_directory, file_name),
+    file_name
+  )
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing) > 0L) existing[[1L]] else candidates[[1L]]
+}
+
+county_path <- locate_data_file("spine_data.csv")
+state_path <- locate_data_file("state_spine.csv")
+
+# Optional direct-download URLs. Set these environment variables before
+# rendering if the CSV files are not already in the data directory:
+#   SPINE_DATA_URL
+#   STATE_SPINE_DATA_URL
+county_data_url <- Sys.getenv("SPINE_DATA_URL", unset = "")
+state_data_url <- Sys.getenv("STATE_SPINE_DATA_URL", unset = "")
+
+download_if_needed <- function(path, url, label) {
+  if (!file.exists(path) && nzchar(url)) {
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    tryCatch(
+      download.file(url, path, mode = "wb", quiet = TRUE),
+      error = function(error) {
+        warning("Could not download ", label, ": ", conditionMessage(error))
+      }
+    )
+  }
+}
+
+download_if_needed(county_path, county_data_url, "county data")
+download_if_needed(state_path, state_data_url, "state data")
+
+county_required <- c(
+  "fips",
+  "never_recovered_2008",
+  "never_recovered_covid",
+  "recovery_ratio_2008",
+  "recovery_ratio_covid",
+  "peak_employment_2008",
+  "peak_employment_covid",
+  "trough_employment_2008",
+  "trough_employment_covid",
+  "recovery_employment_2008",
+  "recovery_employment_covid",
+  "poverty_rate_2007",
+  "poverty_rate_2019",
+  "median_hh_income_2007",
+  "median_hh_income_2019",
+  "population_density_2007",
+  "population_density_2019",
+  "total_population_2007",
+  "total_population_2019",
+  "rucc_2003_2007",
+  "rucc_2013_2019",
+  "net_migration_rate_2007",
+  "net_migration_rate_2019",
+  "pct_hs_plus_2007",
+  "pct_hs_plus_2019",
+  "pct_bachelors_plus_2007",
+  "pct_bachelors_plus_2019",
+  "birth_rate_2007",
+  "birth_rate_2019",
+  "working_age_share_2007",
+  "working_age_share_2019"
+)
+
+state_required <- c(
+  "state_fips",
+  "state_abbr",
+  "recovery_ratio_2008",
+  "recovery_ratio_covid",
+  "poverty_rate_2007",
+  "poverty_rate_2019",
+  "median_hh_income_2007",
+  "median_hh_income_2019",
+  "pct_rural_2007",
+  "pct_rural_2019",
+  "population_density_2007",
+  "population_density_2019",
+  "proprietor_share_2007",
+  "proprietor_share_2019",
+  "net_migration_rate_2007",
+  "net_migration_rate_2019",
+  "pct_hs_plus_2007",
+  "pct_hs_plus_2019",
+  "pct_bachelors_plus_2007",
+  "pct_bachelors_plus_2019",
+  "birth_rate_2007",
+  "birth_rate_2019",
+  "pre_unemployment_2007",
+  "pre_unemployment_2019",
+  "working_age_share_2007",
+  "working_age_share_2019"
+)
+
+data_problems <- character()
+
+if (!file.exists(county_path)) {
+  data_problems <- c(
+    data_problems,
+    paste0(
+      "`", county_path, "` is missing. Add it or set `SPINE_DATA_URL`."
+    )
+  )
+} else {
+  county <- read_csv(county_path, show_col_types = FALSE)
+  missing_county_columns <- setdiff(county_required, names(county))
+  county_share_columns_2007 <- grep(
+    "^share_.*_2007$",
+    names(county),
+    value = TRUE
+  )
+  county_share_columns_2019 <- grep(
+    "^share_.*_2019$",
+    names(county),
+    value = TRUE
+  )
+  if (length(missing_county_columns) > 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", county_path, "` is missing required columns: ",
+        paste(missing_county_columns, collapse = ", ")
+      )
+    )
+  }
+  if (length(county_share_columns_2007) == 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", county_path,
+        "` has no industry-share columns matching `share_*_2007`."
+      )
+    )
+  }
+  if (length(county_share_columns_2019) == 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", county_path,
+        "` has no industry-share columns matching `share_*_2019`."
+      )
+    )
+  }
+}
+
+if (!file.exists(state_path)) {
+  data_problems <- c(
+    data_problems,
+    paste0(
+      "`", state_path, "` is missing. Add it or set `STATE_SPINE_DATA_URL`."
+    )
+  )
+} else {
+  state <- read_csv(state_path, show_col_types = FALSE)
+  missing_state_columns <- setdiff(state_required, names(state))
+  share_columns_2007 <- grep("^share_.*_2007$", names(state), value = TRUE)
+  share_columns_2019 <- grep("^share_.*_2019$", names(state), value = TRUE)
+  if (length(missing_state_columns) > 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", state_path, "` is missing required columns: ",
+        paste(missing_state_columns, collapse = ", ")
+      )
+    )
+  }
+  if (length(share_columns_2007) == 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", state_path,
+        "` has no industry-share columns matching `share_*_2007`."
+      )
+    )
+  }
+  if (length(share_columns_2019) == 0L) {
+    data_problems <- c(
+      data_problems,
+      paste0(
+        "`", state_path,
+        "` has no industry-share columns matching `share_*_2019`."
+      )
+    )
+  }
+}
+
+data_ready <- length(data_problems) == 0L
+
+if (data_ready) {
+  positive_log <- function(x, variable_name) {
+    if (any(x <= 0, na.rm = TRUE)) {
+      stop(variable_name, " contains zero or negative values.", call. = FALSE)
+    }
+    log(x)
+  }
+
+  county$median_hh_income_2007 <- positive_log(
+    county$median_hh_income_2007,
+    "county$median_hh_income_2007"
+  )
+  county$median_hh_income_2019 <- positive_log(
+    county$median_hh_income_2019,
+    "county$median_hh_income_2019"
+  )
+  county$population_density_2007 <- positive_log(
+    county$population_density_2007,
+    "county$population_density_2007"
+  )
+  county$population_density_2019 <- positive_log(
+    county$population_density_2019,
+    "county$population_density_2019"
+  )
+  state$median_hh_income_2007 <- positive_log(
+    state$median_hh_income_2007,
+    "state$median_hh_income_2007"
+  )
+  state$median_hh_income_2019 <- positive_log(
+    state$median_hh_income_2019,
+    "state$median_hh_income_2019"
+  )
+  state$population_density_2007 <- positive_log(
+    state$population_density_2007,
+    "state$population_density_2007"
+  )
+  state$population_density_2019 <- positive_log(
+    state$population_density_2019,
+    "state$population_density_2019"
+  )
+} else {
+  cat(
+    "### Data files needed\n\n",
+    paste0("- ", data_problems, collapse = "\n"),
+    "\n\nThe analysis chunks were skipped so this document can still render. ",
+    "Once the correct economic CSV files are supplied, render again.\n",
+    sep = ""
+  )
+}
+
+# Skip analysis chunks when the correct economic datasets are unavailable.
+knitr::opts_chunk$set(eval = data_ready)
+```
+
+```{r}
+ggplot(county, aes(x = factor(never_recovered_2008))) +
+  geom_bar(fill = "steelblue", width = 0.7) +
+  scale_x_discrete(labels = c(
+    "FALSE" = "Recovered",
+    "TRUE" = "Never Recovered"
+  )) +
+  labs(
+    title = "County Recovery Status After 2008 Recession",
+    x = "",
+    y = "Number of Counties"
+  ) +
+  theme_minimal(base_size=12) +
+  theme(
+    plot.title = element_text(
+      size = 23,
+      hjust = 0.5,
+      face = "bold",
+      margin = margin(t=15)
+    ),
+    axis.title = element_text(
+      size = 15
+    ),
+    axis.text = element_text(
+      size = 15
+    )
+  )
+ggplot(county, aes(x = factor(never_recovered_covid))) +
+  geom_bar(fill = "steelblue", width = 0.7) +
+  scale_x_discrete(labels = c(
+    "FALSE" = "Recovered",
+    "TRUE" = "Never Recovered"
+  )) +
+  labs(
+    title = "County Recovery Status After COVID-19",
+    x = "",
+    y = "Number of Counties"
+  ) +
+  theme_minimal(base_size=12) +
+  theme(
+    plot.title = element_text(
+      size = 23,
+      hjust = 0.5,
+      face = "bold",
+      margin = margin(t=15)
+    ),
+    axis.title = element_text(
+      size = 15
+    ),
+    axis.text = element_text(
+      size = 15
+    )
+  )
+
+
+```
+```{r}
+library(usmap)
+library(patchwork)
+
+#county$fips <- sprintf("%05d", as.integer(county$fips)) mean
+
+plot_usmap(
+  data = county,
+  regions = "counties",
+  values = "recovery_ratio_2008",
+  color = "white"
+) +
+  scale_fill_gradientn(
+    colors = c(
+      "darkblue",
+      "skyblue",
+      "pink",
+      "red",
+      "darkred"
+    ),
+    values = scales::rescale(c(
+      0.5,
+      0.7,
+      0.8,
+      1,
+      1.5
+    )),
+    na.value = "grey90",
+    name = "Recovery Ratio"
+  ) +
+  labs(title = "County Recovery Ratio After 2008 Recession")
+plot_usmap(
+  data = county,
+  regions = "counties",
+  values = "recovery_ratio_covid",
+  color = "white"
+) +
+  scale_fill_gradientn(
+    colors = c(
+      "darkblue",
+      "skyblue",
+      "pink",
+      "red",
+      "darkred"
+    ),
+    values = scales::rescale(c(
+      0.5,
+      0.7,
+      0.8,
+      1,
+      1.5
+    )),
+    na.value = "grey90",
+    name = "Recovery Ratio"
+  ) +
+  labs(title = "County Recovery Ratio After COVID")
+
+#graph1 + graph2
+
+```
+
+```{r}
+
+#names(state)
+```
+
+```{r}
+
+if ("state_abbr" %in% names(state)) {
+  state <- state %>% rename(state = state_abbr)
+}
+
+plot_usmap(
+  data = state,
+  regions = "states",
+  values = "recovery_ratio_2008",
+  color = "white"
+) +
+  scale_fill_gradient(
+    low = "yellow",
+    high = "blue",
+    na.value = "grey",
+    name = "Recovery Ratio"
+  ) +
+  labs(title = "State Recovery Ratio After the Great Recession") +
+  theme_minimal()
+
+
+plot_usmap(
+  data = state,
+  regions = "states",
+  values = "recovery_ratio_covid",
+  color = "white"
+) +
+  scale_fill_gradient(
+    low = "yellow",
+    high = "blue",
+    na.value = "grey",
+    name = "Recovery Ratio"
+  ) +
+  labs(title = "State Recovery Ratio After COVID-19") +
+  theme_minimal()
+```
+
+```{r}
+names(county)
+```
+```{r}
+library(GGally)
+
+eda_2008 <- county %>%
+  select(
+    recovery_ratio_2008,
+    poverty_rate_2007,
+    median_hh_income_2007,
+    population_density_2007,
+    #total_population_2007,
+    rucc_2003_2007
+  ) %>%
+  rename(
+    recovery_ratio = recovery_ratio_2008,
+    poverty_rate = poverty_rate_2007,
+    median_income = median_hh_income_2007,
+    pop_density = population_density_2007,
+#    totalpopulation = total_population_2007,
+    rurality = rucc_2003_2007
+  )
+
+ggpairs(
+  eda_2008,
+  upper = list(continuous = "points"),
+  lower = list(continuous = "cor")
+)
+
+scatter_covid <- county %>%
+  select(
+    recovery_ratio_covid,
+    poverty_rate_2019,
+    median_hh_income_2019,
+    population_density_2019,
+    rucc_2013_2019
+  ) %>%
+  rename(
+    recovery_ratio = recovery_ratio_covid,
+    poverty_rate = poverty_rate_2019,
+    median_income = median_hh_income_2019,
+    pop_density = population_density_2019,
+    rurality = rucc_2013_2019
+  )
+
+ggpairs(
+  scatter_covid,
+  upper = list(continuous = "points"),
+  lower = list(continuous = "cor")
+)
+```
+
+
+# models
+
+## county
+```{r}
+county_share_terms_2007 <- sort(
+  grep("^share_.*_2007$", names(county), value = TRUE)
+)
+
+county_core_terms_2008 <- c(
+  "peak_employment_2008",
+  "trough_employment_2008",
+  "recovery_employment_2008",
+  "poverty_rate_2007",
+  "median_hh_income_2007",
+  "population_density_2007",
+  "factor(rucc_2003_2007)",
+  "net_migration_rate_2007",
+  "pct_hs_plus_2007",
+  "pct_bachelors_plus_2007",
+  "birth_rate_2007",
+  "working_age_share_2007"
+)
+
+fit1.county.formula <- reformulate(
+  c(county_core_terms_2008, county_share_terms_2007),
+  response = "recovery_ratio_2008",
+  intercept = FALSE
+)
+
+fit1.county <- lm(
+  fit1.county.formula,
+  data = county
+)
+
+fit1.county.formula
+summary(fit1.county)
+```
+
+
+```{r}
+county_share_terms_2019 <- sort(
+  grep("^share_.*_2019$", names(county), value = TRUE)
+)
+
+county_core_terms_covid <- c(
+  "peak_employment_covid",
+  "trough_employment_covid",
+  "recovery_employment_covid",
+  "poverty_rate_2019",
+  "median_hh_income_2019",
+  "population_density_2019",
+  "factor(rucc_2013_2019)",
+  "net_migration_rate_2019",
+  "pct_hs_plus_2019",
+  "pct_bachelors_plus_2019",
+  "birth_rate_2019",
+  "working_age_share_2019"
+)
+
+fit2.county.formula <- reformulate(
+  c(county_core_terms_covid, county_share_terms_2019),
+  response = "recovery_ratio_covid",
+  intercept = FALSE
+)
+
+fit2.county <- lm(
+  fit2.county.formula,
+  data = county
+)
+
+fit2.county.formula
+summary(fit2.county)
+```
+
+```{r}
+model_data <- data.frame(
+  recovery_ratio = c(
+    county$recovery_ratio_2008,
+    county$recovery_ratio_covid
+  ),
+  peak_employment = c(
+    county$peak_employment_2008,
+    county$peak_employment_covid
+  ),
+  trough_employment = c(
+    county$trough_employment_2008,
+    county$trough_employment_covid
+  ),
+  recovery_employment = c(
+    county$recovery_employment_2008,
+    county$recovery_employment_covid
+  ),
+  poverty_rate = c(
+    county$poverty_rate_2007,
+    county$poverty_rate_2019
+  ),
+  median_hh_income = c(
+    county$median_hh_income_2007,
+    county$median_hh_income_2019
+  ),
+  total_pop = c(
+    county$total_population_2007,
+    county$total_population_2019
+  ),
+  rucc = factor(c(
+    county$rucc_2003_2007,
+    county$rucc_2013_2019
+  )),
+  net_migration_rate = c(
+    county$net_migration_rate_2007,
+    county$net_migration_rate_2019
+  ),
+  pct_hs_plus = c(
+    county$pct_hs_plus_2007,
+    county$pct_hs_plus_2019
+  ),
+  pct_bachelors_plus = c(
+    county$pct_bachelors_plus_2007,
+    county$pct_bachelors_plus_2019
+  ),
+  working_age_share = c(
+    county$working_age_share_2007,
+    county$working_age_share_2019
+  )
+)
+
+county_share_bases <- sort(
+  intersect(
+    sub("_2007$", "", county_share_terms_2007),
+    sub("_2019$", "", county_share_terms_2019)
+  )
+)
+
+for (share_name in county_share_bases) {
+  model_data[[share_name]] <- c(
+    county[[paste0(share_name, "_2007")]],
+    county[[paste0(share_name, "_2019")]]
+  )
+}
+
+county_final_core_terms <- c(
+  "peak_employment",
+  "trough_employment",
+  "recovery_employment",
+  "poverty_rate",
+  "median_hh_income",
+  "total_pop",
+  "rucc",
+  "net_migration_rate",
+  "pct_hs_plus",
+  "pct_bachelors_plus",
+  "working_age_share"
+)
+
+fitfinal.county.formula <- reformulate(
+  c(county_final_core_terms, county_share_bases),
+  response = "recovery_ratio",
+  intercept = FALSE
+)
+
+fitfinal.county <- lm(
+  fitfinal.county.formula,
+  data = model_data
+)
+
+fitfinal.county.formula
+summary(fitfinal.county)
+```
+
+```{r}
+state_share_terms_2007 <- sort(grep(
+  "^share_.*_2007$",
+  names(state),
+  value = TRUE
+))
+
+state_core_terms_2008 <- c(
+  "poverty_rate_2007",
+  "median_hh_income_2007",
+  "pct_rural_2007",
+  "population_density_2007",
+  "proprietor_share_2007",
+  "net_migration_rate_2007",
+  "pct_hs_plus_2007",
+  "pct_bachelors_plus_2007",
+  "birth_rate_2007",
+  "pre_unemployment_2007",
+  "working_age_share_2007"
+)
+
+fit1.state.formula <- reformulate(
+  c(state_core_terms_2008, state_share_terms_2007),
+  response = "recovery_ratio_2008",
+  intercept = FALSE
+)
+
+fit1.state <- lm(
+  fit1.state.formula,
+  data = state
+)
+
+fit1.state.formula
+summary(fit1.state)
+```
+
+
+
+```{r}
+anova(fitfinal.county)
+```
+```{r}
+plot(fitfinal.county)
+```
+
+```{r}
+state_share_terms_2007 <- sort(grep(
+  "^share_.*_2007$",
+  names(state),
+  value = TRUE
+))
+
+state_share_terms_2019 <- sort(grep(
+  "^share_.*_2019$",
+  names(state),
+  value = TRUE
+))
+
+state_model_data <- data.frame(
+  state_fips = rep(state$state_fips, 2),
+
+  recovery_ratio = c(
+    state$recovery_ratio_2008,
+    state$recovery_ratio_covid
+  ),
+
+  crisis = factor(
+    rep(c("recession_2008", "covid"), each = nrow(state)),
+    levels = c("recession_2008", "covid")
+  ),
+
+  poverty_rate = c(
+    state$poverty_rate_2007,
+    state$poverty_rate_2019
+  ),
+
+  median_hh_income = c(
+    state$median_hh_income_2007,
+    state$median_hh_income_2019
+  ),
+
+  pct_rural = c(
+    state$pct_rural_2007,
+    state$pct_rural_2019
+  ),
+
+  population_density = c(
+    state$population_density_2007,
+    state$population_density_2019
+  ),
+
+  proprietor_share = c(
+    state$proprietor_share_2007,
+    state$proprietor_share_2019
+  ),
+
+  net_migration_rate = c(
+    state$net_migration_rate_2007,
+    state$net_migration_rate_2019
+  ),
+
+  pct_hs_plus = c(
+    state$pct_hs_plus_2007,
+    state$pct_hs_plus_2019
+  ),
+
+  pct_bachelors_plus = c(
+    state$pct_bachelors_plus_2007,
+    state$pct_bachelors_plus_2019
+  ),
+
+  birth_rate = c(
+    state$birth_rate_2007,
+    state$birth_rate_2019
+  ),
+
+  pre_unemployment = c(
+    state$pre_unemployment_2007,
+    state$pre_unemployment_2019
+  ),
+
+  working_age_share = c(
+    state$working_age_share_2007,
+    state$working_age_share_2019
+  )
+)
+
+state_share_bases <- sort(
+  intersect(
+    sub("_2007$", "", state_share_terms_2007),
+    sub("_2019$", "", state_share_terms_2019)
+  )
+)
+
+for (share_name in state_share_bases) {
+  state_model_data[[share_name]] <- c(
+    state[[paste0(share_name, "_2007")]],
+    state[[paste0(share_name, "_2019")]]
+  )
+}
+
+state_final_core_terms <- c(
+  "crisis",
+  "poverty_rate",
+  "median_hh_income",
+  "pct_rural",
+  "population_density",
+  "proprietor_share",
+  "net_migration_rate",
+  "pct_hs_plus",
+  "pct_bachelors_plus",
+  "birth_rate",
+  "pre_unemployment",
+  "working_age_share"
+)
+
+fitfinal.state.formula <- reformulate(
+  c(state_final_core_terms, state_share_bases),
+  response = "recovery_ratio",
+  intercept = FALSE
+)
+
+fitfinal.state <- lm(
+  fitfinal.state.formula,
+  data = state_model_data
+)
+
+fitfinal.state.formula
+summary(fitfinal.state)
+
+plot(fitfinal.state)
+```
+
+```{r}
+library(usmap)
+library(patchwork)
+
+#county$fips <- sprintf("%05d", as.integer(county$fips)) mean
+
+plot_usmap(
+  data = county,
+  regions = "counties",
+  values = "poverty_rate_2007",
+  color = "white"
+) +
+  scale_fill_gradientn(
+    colors = c(
+      "darkblue",
+      "skyblue",
+      "pink",
+      "red",
+      "darkred"
+    ),
+    values = scales::rescale(c(
+      0.5,
+      0.7,
+      0.8,
+      1,
+      1.5
+    )),
+    na.value = "grey90",
+    name = "poverty %"
+  ) +
+  labs(title = "County poverty rate before recession")
+plot_usmap(
+  data = county,
+  regions = "counties",
+  values = "poverty_rate_2019",
+  color = "white"
+) +
+  scale_fill_gradientn(
+    colors = c(
+      "darkblue",
+      "skyblue",
+      "pink",
+      "red",
+      "darkred"
+    ),
+    values = scales::rescale(c(
+      0.5,
+      0.7,
+      0.8,
+      1,
+      1.5
+    )),
+    na.value = "grey90",
+    name = "poverty %"
+  ) +
+  labs(title = "County poverty rate before covid")
+
+
+```

@@ -1,0 +1,319 @@
+---
+title: "Bouncing Back: Predicting an Economy's Recovery"
+author:
+- Fiona Wu
+- Andrew Sergeyev
+- Lucy Zhou
+- Sasha Kourakin
+- Hejia Jiang
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+---
+
+## Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  results = "markup",
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+
+options(scipen = 999, digits = 3)
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(
+  tidyverse,
+  broom,
+  car,
+  glmnet,
+  ranger,
+  gbm
+)
+```
+
+```{r}
+required_packages <- c("tidyverse", "scales", "usmap")
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Missing required package(s): ", paste(missing_packages, collapse = ", "),
+    "\nInstall them with:\n  install.packages(c(",
+    paste(sprintf('"%s"', missing_packages), collapse = ", "), "))",
+    call. = FALSE
+  )
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(scales)
+  library(usmap)
+})
+```
+
+```{r}
+if (!"data_year" %in% names(formals(usmap::us_map)) ||
+    !"data_year" %in% names(formals(usmap::plot_usmap))) 
+  stop(
+    "The installed usmap package"
+)
+
+```
+
+## Data
+```{r}
+county_data <- read_csv("county_spine_clean.csv", show_col_types = FALSE)
+county_data
+```
+
+```{r}
+state_data <- read_csv("state_spine_clean.csv", show_col_types = FALSE)
+state_data
+```
+
+```{r}
+features_covid <- c(
+  "poverty_rate_2019",
+  "median_hh_income_2019",
+  "total_population_2019",
+  "rucc_2013_2019",
+  "population_density_2019",
+  "proprietor_share_2019",
+  "net_migration_rate_2019",
+  "pct_hs_plus_2019",
+  "pct_bachelors_plus_2019",
+  "birth_rate_2019"
+)
+```
+
+```{r}
+ggplot(county_data,
+       aes(x = poverty_rate_2019,
+           y = recovery_ratio_covid)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "red") +
+  labs(
+    x = "Poverty Rate (2019)",
+    y = "Recovery Ratio (covid)",
+    title = "Recovery Ratio vs. Poverty Rate"
+  ) +
+  theme_minimal()
+
+poverty_rate <- lm(
+  recovery_ratio_covid ~ poverty_rate_2019,
+  data = county_data
+)
+
+summary(poverty_rate)
+```
+
+```{r}
+ggplot(county_data,
+       aes(x = median_hh_income_2019,
+           y = recovery_ratio_covid)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "red") +
+  labs(
+    x = "Median Income (2019)",
+    y = "Recovery Ratio (covid)",
+    title = "Recovery Ratio vs. Median Income"
+  ) +
+  theme_minimal()
+
+median_income <- lm(
+  recovery_ratio_covid ~ median_hh_income_2019,
+  data = county_data
+)
+
+summary(median_income)
+```
+
+```{r}
+ggplot(county_data,
+       aes(x = rucc_2013_2019,
+           y = recovery_ratio_covid)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "red") +
+  labs(
+    x = "Rurality (2019)",
+    y = "Recovery Ratio (covid)",
+    title = "Recovery Ratio vs. Rurality"
+  ) +
+  theme_minimal()
+
+rucc <- lm(
+  recovery_ratio_covid ~ rucc_2013_2019,
+  data = county_data
+)
+
+summary(rucc)
+```
+
+```{r}
+#Population is skewed right
+county_data <- county_data %>%
+  mutate(
+    log_population_density_2019 = log1p(population_density_2019)
+  )
+```
+
+```{r}
+ggplot(county_data,
+       aes(x = log_population_density_2019,
+           y = recovery_ratio_covid)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",
+              se = TRUE,
+              color = "red") +
+  labs(
+    x = "Log Population Density (2019)",
+    y = "Recovery Ratio (covid)",
+    title = "Recovery Ratio vs. Log Population Density"
+  ) +
+  theme_minimal()
+
+log_population_density <- lm(
+  recovery_ratio_covid ~ log_population_density_2019,
+  data = county_data
+)
+
+summary(log_population_density)
+```
+
+```{r}
+library(broom)
+library(dplyr)
+
+summary_model <- tibble(
+  Model = c(
+    "Poverty",
+    "Income",
+    "Rurality",
+    "Population Density"
+  ),
+  R2 = c(
+    summary(poverty_rate)$r.squared,
+    summary(median_income)$r.squared,
+    summary(rucc)$r.squared,
+    summary(population_density)$r.squared
+  ),
+  Adj_R2 = c(
+    summary(poverty_rate)$adj.r.squared,
+    summary(median_income)$adj.r.squared,
+    summary(rucc)$adj.r.squared,
+    summary(population_density)$adj.r.squared
+  ),
+  P_Value = c(
+    coef(summary(poverty_rate))[2,4],
+    coef(summary(median_income))[2,4],
+    coef(summary(rucc))[2,4],
+    coef(summary(population_density))[2,4]
+  )
+)
+
+summary_model
+```
+
+# The model shows that each of the variables are stastically significant because the p-values around 0.05 or less, demostrating that they are all small, but the R2 values are all less than 5%, suggesting that not only one variable is able to predict the recovery ratio, and we must use a multiple regression to highlight the prediction more clearly. 
+
+```{r}
+#Create a multiple regression
+multiple_covid <- lm(
+  recovery_ratio_covid ~
+    poverty_rate_2019 +
+    median_hh_income_2019 +
+    total_population_2019 +
+    factor(rucc_2013_2019) +
+    log_population_density_2019 +
+    proprietor_share_2019 +
+    net_migration_rate_2019 +
+    pct_bachelors_plus_2019 +
+    birth_rate_2019,
+  data = county_data
+)
+
+summary(multiple_covid)
+```
+
+# The multiple regression model indicated that median household income, rurality, proprietor share, net migration rate, bachelor's degree attainment, and birth rate were significant predictors of county recovery following COVID-19. In contrast, total population and population density were not statistically significant after controlling for the other socioeconomic variables. Poverty rate showed only marginal significance (p = 0.092), suggesting its effect diminished once the remaining predictors were included.
+
+```{r}
+lasso_data <- county_data %>%
+  select(
+    recovery_ratio_covid,
+    poverty_rate_2019,
+    median_hh_income_2019,
+    total_population_2019,
+    rucc_2013_2019,
+    log_population_density_2019,
+    proprietor_share_2019,
+    net_migration_rate_2019,
+    pct_bachelors_plus_2019,
+    birth_rate_2019
+  ) %>%
+  na.omit()
+```
+
+```{r}
+x <- model.matrix(
+  recovery_ratio_covid ~
+    poverty_rate_2019 +
+    median_hh_income_2019 +
+    total_population_2019 +
+    factor(rucc_2013_2019) +
+    log_population_density_2019 +
+    proprietor_share_2019 +
+    net_migration_rate_2019 +
+    pct_bachelors_plus_2019 +
+    birth_rate_2019,
+  data = county_data
+)[,-1]
+
+y <- lasso_data$recovery_ratio_covid
+```
+
+```{r}
+complete <- complete.cases(x, y)
+
+x <- x[complete, ]
+y <- y[complete]
+
+set.seed(42)
+
+lasso_cv <- cv.glmnet(
+  x,
+  y,
+  alpha = 1
+)
+plot(lasso_cv)
+lasso_cv$lambda.1se
+coef(lasso_cv, s = "lambda.1se")
+```
+

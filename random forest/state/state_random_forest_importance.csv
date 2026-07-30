@@ -1,0 +1,17 @@
+geography,crisis,predictor,importance,predictor_label
+State,Great Recession,poverty_rate,4.066588200796091,Poverty rate
+State,Great Recession,median_hh_income,3.681608445316533,Median hh income
+State,Great Recession,proprietor_share,7.692443715021703,Proprietor share
+State,Great Recession,net_migration_rate,2.8879944857659567,Net migration rate
+State,Great Recession,birth_rate,3.090885155991435,Birth rate
+State,Great Recession,rurality,4.965843950900364,Rurality
+State,Great Recession,log_population,4.052601459372721,Log population
+State,Great Recession,log_density,5.0585730446539054,Log density
+State,COVID-19,poverty_rate,-1.6844580312214599,Poverty rate
+State,COVID-19,median_hh_income,3.0390232675952795,Median hh income
+State,COVID-19,proprietor_share,15.260642685714766,Proprietor share
+State,COVID-19,net_migration_rate,66.63378152607572,Net migration rate
+State,COVID-19,birth_rate,10.962386692382768,Birth rate
+State,COVID-19,rurality,3.724845285960898,Rurality
+State,COVID-19,log_population,-0.5321351508026252,Log population
+State,COVID-19,log_density,7.298339500666337,Log density
