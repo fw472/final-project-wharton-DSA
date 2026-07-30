@@ -52,7 +52,27 @@ county$population_density_2007 <- log(county$population_density_2007)
 county$median_hh_income_2019 <- log(county$median_hh_income_2019)
 county$population_density_2019 <- log(county$population_density_2019)
 
+county <- county %>%
+  mutate(
+    state_abbr = sub(".*, ", "", county_name),
+    state_abbr = if_else(
+      county_name == "District of Columbia",
+      "DC",
+      state_abbr
+    ),
 
+    region = state.region[
+      match(state_abbr, state.abb)
+    ],
+
+    region = case_when(
+      state_abbr == "DC" ~ "South",
+      state_abbr == "PR" ~ "Puerto Rico",
+      TRUE ~ region
+    ),
+
+    region = factor(region)
+  )
 ```
 
 # make variables into cateogrical ones if needed
@@ -70,12 +90,12 @@ county <- county %>%
     never_recovered_covid = factor(never_recovered_covid),
     flag_tiny_base_2008 = factor(flag_tiny_base_2008),
     flag_tiny_base_covid = factor(flag_tiny_base_covid),
-    fips = sprintf("%05d", as.integer(fips))
+    fips = sprintf("%05d", as.integer(fips)),
   )
 ```
 
 ```{r}
-dimensions(county)
+dim(county)
 ```
 
 # models
@@ -90,10 +110,10 @@ fit1.county <- lm(
     population_density_2007 +
     rucc_2003_2007 +
     net_migration_rate_2007 +
-    pct_hs_plus_2007+
-    pct_bachelors_plus_2007+
-    birth_rate_2007+
-    working_age_share_2007+
+    pct_hs_plus_2007 +
+    pct_bachelors_plus_2007 +
+    birth_rate_2007 +
+    working_age_share_2007 +
     share_construction_2007 +
     share_manufacturing_2007 +
     share_retail_2007 +
@@ -101,15 +121,21 @@ fit1.county <- lm(
     share_professional_services_2007 +
     share_healthcare_2007 +
     share_arts_entertainment_2007 +
-    share_accommodation_food_2007 + 
+    share_accommodation_food_2007 +
     black_share_2007 +
-    hispanic_share_2007 + 
-    asian_share_2007 + 
+    hispanic_share_2007 +
+    asian_share_2007 +
     wealth_band_2008,
-    data = county
+  data = county
+)
+fit1.county.region <- update(
+  fit1.county,
+  . ~ . + region
 )
 
-summary(fit1.county)
+summary(fit1.county.region)
+
+anova(fit1.county)
 ```
 
 
@@ -141,8 +167,11 @@ fit2.county <- lm(
     data = county
 )
 
-summary(fit2.county)
-```
+fit2.county.region <- update(
+  fit2.county,
+  . ~ . +region
+)
 
-```{
+summary(fit2.county.region)
+
 ```
