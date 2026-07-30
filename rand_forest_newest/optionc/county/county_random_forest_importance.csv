@@ -1,0 +1,99 @@
+geography,crisis,predictor,importance,predictor_label
+County,Great Recession,poverty_rate,12.679199759163204,Poverty rate
+County,Great Recession,median_hh_income,12.81379651568566,Median hh income
+County,Great Recession,total_population,5.666243933487714,Total population
+County,Great Recession,rurality,2.6007165803399217,Rurality
+County,Great Recession,proprietor_share,3.809045216254687,Proprietor share
+County,Great Recession,net_migration_rate,3.5439733289600395,Net migration rate
+County,Great Recession,pct_hs_plus,0.013213334546309758,Percent hs plus
+County,Great Recession,pct_bachelors_plus,0.24403475768530214,Percent bachelors plus
+County,Great Recession,birth_rate,5.639561100758912,Birth rate
+County,Great Recession,working_age_share,2.7713438877745324,Working age share
+County,Great Recession,share_agriculture,0.32089324731557134,Share agriculture
+County,Great Recession,share_mining,0.7551178936466854,Share mining
+County,Great Recession,share_utilities,-0.011696593048073672,Share utilities
+County,Great Recession,share_construction,1.2754791391304376,Share construction
+County,Great Recession,share_manufacturing,0.8520906497115956,Share manufacturing
+County,Great Recession,share_wholesale_trade,0.48394891121081657,Share wholesale trade
+County,Great Recession,share_retail,0.9322164517767392,Share retail
+County,Great Recession,share_transportation,1.4159774329190957,Share transportation
+County,Great Recession,share_information,1.1929843351031146,Share information
+County,Great Recession,share_finance,2.0869580429472254,Share finance
+County,Great Recession,share_real_estate,1.0779959994479495,Share real estate
+County,Great Recession,share_professional_services,1.2041924077771753,Share professional services
+County,Great Recession,share_management,0.009332838931088567,Share management
+County,Great Recession,share_administrative_waste,0.8714008784915945,Share administrative waste
+County,Great Recession,share_education_services,0.2750339766082977,Share education services
+County,Great Recession,share_healthcare,0.9318077320848661,Share healthcare
+County,Great Recession,share_arts_entertainment,1.0442888903230965,Share arts entertainment
+County,Great Recession,share_accommodation_food,2.0017629552880947,Share accommodation food
+County,Great Recession,share_other_services,0.857446407435197,Share other services
+County,Great Recession,pop_trend,8.959514017970758,Pop trend
+County,Great Recession,black_share,6.958651362288189,Black share
+County,Great Recession,hispanic_share,3.247924310640971,Hispanic share
+County,Great Recession,asian_share,5.584518847708687,Asian share
+County,Great Recession,other_race_share,5.080921087322516,Other race share
+County,Great Recession,bachelors_share,1.251409154437943,Bachelors share
+County,Great Recession,agriculture_mining_share,0.5302014829994468,Agriculture mining share
+County,Great Recession,construction_share,0.1312974065742281,Construction share
+County,Great Recession,manufacturing_share,0.3978389326599955,Manufacturing share
+County,Great Recession,wholesale_trade_share,0.010132181173020307,Wholesale trade share
+County,Great Recession,retail_trade_share,0.0757249958322824,Retail trade share
+County,Great Recession,transportation_utilities_share,0.0883250440086697,Transportation utilities share
+County,Great Recession,information_share,0.3173935695486025,Information share
+County,Great Recession,finance_real_estate_share,0.3081698739701287,Finance real estate share
+County,Great Recession,professional_admin_share,0.948764333667049,Professional admin share
+County,Great Recession,education_health_share,0.15159736925679274,Education health share
+County,Great Recession,arts_accommodation_share,0.1277333531061401,Arts accommodation share
+County,Great Recession,other_services_share,-0.00510454062782629,Other services share
+County,Great Recession,wealth_band,3.4307662443870033,Wealth band
+County,Great Recession,log_density,5.193844015740477,Log density
+County,COVID-19,poverty_rate,1.2193776129701561,Poverty rate
+County,COVID-19,median_hh_income,3.2638666251300203,Median hh income
+County,COVID-19,total_population,2.3165197446667616,Total population
+County,COVID-19,rurality,5.394892355429459,Rurality
+County,COVID-19,proprietor_share,3.7128484790539154,Proprietor share
+County,COVID-19,net_migration_rate,24.829044823198736,Net migration rate
+County,COVID-19,pct_hs_plus,0.13362019132868838,Percent hs plus
+County,COVID-19,pct_bachelors_plus,0.08124013784319888,Percent bachelors plus
+County,COVID-19,birth_rate,1.2319824132707167,Birth rate
+County,COVID-19,working_age_share,2.8214016141421685,Working age share
+County,COVID-19,share_agriculture,0.1943064210582614,Share agriculture
+County,COVID-19,share_mining,0.2838489296353315,Share mining
+County,COVID-19,share_utilities,0.12499651187484603,Share utilities
+County,COVID-19,share_construction,0.4726118274400569,Share construction
+County,COVID-19,share_manufacturing,0.6297147401123414,Share manufacturing
+County,COVID-19,share_wholesale_trade,0.619809383708266,Share wholesale trade
+County,COVID-19,share_retail,2.243269705995979,Share retail
+County,COVID-19,share_transportation,0.3710538176386731,Share transportation
+County,COVID-19,share_information,0.1893008852509753,Share information
+County,COVID-19,share_finance,0.5596636330222227,Share finance
+County,COVID-19,share_real_estate,0.9657699928364979,Share real estate
+County,COVID-19,share_professional_services,1.1863685148618441,Share professional services
+County,COVID-19,share_management,0.06856016379540597,Share management
+County,COVID-19,share_administrative_waste,0.5185196221712588,Share administrative waste
+County,COVID-19,share_education_services,0.22410506680169848,Share education services
+County,COVID-19,share_healthcare,0.8879527466564359,Share healthcare
+County,COVID-19,share_arts_entertainment,0.36899133934323,Share arts entertainment
+County,COVID-19,share_accommodation_food,1.8822148879825178,Share accommodation food
+County,COVID-19,share_other_services,3.0077888834932276,Share other services
+County,COVID-19,pop_trend,62.207696733653385,Pop trend
+County,COVID-19,black_share,1.415863691132499,Black share
+County,COVID-19,hispanic_share,1.085653885038657,Hispanic share
+County,COVID-19,asian_share,2.8596400792885444,Asian share
+County,COVID-19,other_race_share,1.1521136665710956,Other race share
+County,COVID-19,bachelors_share,11.105533948292674,Bachelors share
+County,COVID-19,agriculture_mining_share,3.3599215276183134,Agriculture mining share
+County,COVID-19,construction_share,1.1338918157412374,Construction share
+County,COVID-19,manufacturing_share,1.1641919198887047,Manufacturing share
+County,COVID-19,wholesale_trade_share,0.05124742439087674,Wholesale trade share
+County,COVID-19,retail_trade_share,0.3919213851255197,Retail trade share
+County,COVID-19,transportation_utilities_share,0.41910872076404304,Transportation utilities share
+County,COVID-19,information_share,0.3897108910396777,Information share
+County,COVID-19,finance_real_estate_share,1.907611045235615,Finance real estate share
+County,COVID-19,professional_admin_share,21.901625635048234,Professional admin share
+County,COVID-19,education_health_share,0.5821760187447534,Education health share
+County,COVID-19,arts_accommodation_share,6.640486482930052,Arts accommodation share
+County,COVID-19,other_services_share,0.6697165759822785,Other services share
+County,COVID-19,wealth_band,1.2552545669252875,Wealth band
+County,COVID-19,log_density,2.691036371502986,Log density
