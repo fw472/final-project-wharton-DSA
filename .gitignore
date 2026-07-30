@@ -4,3 +4,7 @@ raw_data/
 .Rhistory
 .RData
 .Rproj.user/
+*.html
+*_cache/
+*_files/
+Rplots.pdf
