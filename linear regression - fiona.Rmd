@@ -1,0 +1,148 @@
+---
+title: "Bouncing Back: Predicting an Economy’s Recovery"
+author:
+- Fiona Wu
+- Andrew Sergeyev
+- Lucy Zhou
+- Sasha Kourakin
+- Hejia Jiang
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: '4'
+  html_document:
+    code_folding: show
+    highlight: haddock
+    number_sections: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '4'
+urlcolor: blue
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, results = "hide", fig.width=8, fig.height=7)
+options(scipen = 0, digits = 3)  # controls base R output
+# check if you have ISLR package, if not, install it
+if(!require('pacman')) {install.packages('pacman')}
+pacman::p_load(ISLR, readxl, tidyverse, magrittr, dplyr, ggplot2, ggrepel, patchwork)
+```
+
+\pagebreak
+
+#  Abstract
+
+
+# Data EDA
+```{r}
+library(readr)
+
+county <- read_csv("sigh.csv", show_col_types = FALSE)
+state <- read_csv("data/state_spine.csv", show_col_types = FALSE)
+
+county$median_hh_income_2007 <- log(county$median_hh_income_2007)
+county$population_density_2007 <- log(county$population_density_2007)
+
+county$median_hh_income_2019 <- log(county$median_hh_income_2019)
+county$population_density_2019 <- log(county$population_density_2019)
+
+
+```
+
+# make variables into cateogrical ones if needed
+```{r}
+county <- county %>%
+  mutate(
+    rucc_2003_2007 = factor(rucc_2003_2007, levels = 1:9),
+    rucc_2013_2019 = factor(rucc_2013_2019, levels = 1:9),
+
+    wealth_band_2008 = factor(wealth_band_2008, levels = c("lower", "middle", "higher"), ordered = TRUE),
+
+    wealth_band_covid = factor(wealth_band_covid, levels = c("lower", "middle", "higher"), ordered = TRUE),
+
+    never_recovered_2008 = factor(never_recovered_2008),
+    never_recovered_covid = factor(never_recovered_covid),
+    flag_tiny_base_2008 = factor(flag_tiny_base_2008),
+    flag_tiny_base_covid = factor(flag_tiny_base_covid),
+    fips = sprintf("%05d", as.integer(fips))
+  )
+```
+
+```{r}
+dimensions(county)
+```
+
+# models
+
+## county, recession
+```{r}
+#recovery_ratio_2008 <- county$recovery_ratio_2008
+fit1.county <- lm(
+  recovery_ratio_2008 ~
+    poverty_rate_2007 +
+    median_hh_income_2007 +
+    population_density_2007 +
+    rucc_2003_2007 +
+    net_migration_rate_2007 +
+    pct_hs_plus_2007+
+    pct_bachelors_plus_2007+
+    birth_rate_2007+
+    working_age_share_2007+
+    share_construction_2007 +
+    share_manufacturing_2007 +
+    share_retail_2007 +
+    share_finance_2007 +
+    share_professional_services_2007 +
+    share_healthcare_2007 +
+    share_arts_entertainment_2007 +
+    share_accommodation_food_2007 + 
+    black_share_2007 +
+    hispanic_share_2007 + 
+    asian_share_2007 + 
+    wealth_band_2008,
+    data = county
+)
+
+summary(fit1.county)
+```
+
+
+## county, covid
+```{r}
+fit2.county <- lm(
+  recovery_ratio_covid ~
+    poverty_rate_2019 +
+    median_hh_income_2019 +
+    population_density_2019 +
+    rucc_2013_2019 +
+    net_migration_rate_2019 +
+    pct_hs_plus_2019 +
+    pct_bachelors_plus_2019 +
+    birth_rate_2019 +
+    working_age_share_2019 +
+    share_construction_2019 +
+    share_manufacturing_2019 +
+    share_retail_2019 +
+    share_finance_2019 +
+    share_professional_services_2019 +
+    share_healthcare_2019 +
+    share_arts_entertainment_2019 +
+    share_accommodation_food_2019 + 
+    black_share_2019 +
+    hispanic_share_2019 + 
+    asian_share_2019 + 
+    wealth_band_covid,
+    data = county
+)
+
+summary(fit2.county)
+```
+
+```{
+```
