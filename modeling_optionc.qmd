@@ -1,0 +1,1006 @@
+---
+title: "Option C: Expanded Predictors via ACS (Race, Education, Industry Mix)"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    df-print: kable
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(tidyverse)
+library(estimatr)   # lm_robust, HC1 SEs
+library(glmnet)
+library(randomForest)
+library(jsonlite)
+library(httr)
+
+set.seed(20260729)
+
+dir.create("raw_data", showWarnings = FALSE)
+dir.create("figures_optionc", showWarnings = FALSE)
+census_key <- Sys.getenv("CENSUS_API_KEY")
+```
+
+This is a **separate extension** of Option A, not a replacement. Option A
+(`modeling_andrew.qmd`, its cached fits, and `figures/*.png`) is untouched --
+read-only everywhere it's referenced below. This document builds its own
+`spine_data_optionc.csv` and writes any figures to `figures_optionc/`.
+
+Option A kept: 4 studied predictors (self-employment, migration, unemployment,
+working-age share), same 6 controls, same log outcome, same RUCC-as-factor
+spec, same seed. This document adds three predictor buckets on top -- race,
+education, industry mix -- built from ACS/PEP sources not already in the
+pipeline, then re-runs the full Option A model set on the resulting (smaller)
+sample.
+
+## 1. New predictor: RACE (Census PEP, not ACS)
+
+Race is a full-coverage PEP series, not ACS -- every county gets a value,
+unlike education/industry below. Built as shares of total population, using
+the Census "race alone" categories (White/Black/AIAN/Asian/NHPI/Two-or-more),
+stable OMB categories across both vintages, plus a separate Hispanic-origin
+share (an ethnicity flag orthogonal to race in Census methodology, not a
+7th race category).
+
+- **2007**: `co-est00int-sexracehisp.csv` -- a single national county-level
+  file from the 2000-2010 intercensal series, already broken out by
+  SEX x ORIGIN x RACE with a direct `POPESTIMATE2007` column. Simpler than
+  the per-state single-year-age `co-est00int-alldata-<state>.csv` files (not
+  needed here since no age breakdown is wanted) -- confirmed by request,
+  `SEX=0` (both sexes), `RACE=0`/`ORIGIN=0` total = 52,405 for Autauga
+  County, AL, matching the population already used elsewhere in this
+  project's pipeline for the same county/year.
+- **2019**: `cc-est2019-alldata.csv` -- the single national CC-EST2019 file
+  with a full race/Hispanic-origin breakdown by single-year age (176MB;
+  the per-state files already cached elsewhere in this project's
+  `raw_data/` are the age-sex-only variant and don't carry race). Filtered
+  to `AGEGRP == "0"` (all ages) and `YEAR == "12"`, confirmed to reproduce
+  the already-known 2019 population for Autauga County (55,869) exactly.
+
+```{r race-2007, cache=TRUE}
+race_2007_path <- "raw_data/optionc_race_2007.rds"
+if (file.exists(race_2007_path)) {
+  race_2007 <- readRDS(race_2007_path)
+} else {
+  sexracehisp_path <- "raw_data/co-est00int-sexracehisp.csv"
+  if (!file.exists(sexracehisp_path)) {
+    GET("https://www2.census.gov/programs-surveys/popest/datasets/2000-2010/intercensal/county/co-est00int-sexracehisp.csv",
+        add_headers(`User-Agent` = "Mozilla/5.0"), write_disk(sexracehisp_path, overwrite = TRUE), timeout(120))
+  }
+  d07 <- read_csv(sexracehisp_path, show_col_types = FALSE, col_types = cols(.default = "c")) %>%
+    filter(SUMLEV == "050", SEX == "0") %>%
+    transmute(fips = paste0(sprintf("%02s", STATE), sprintf("%03s", COUNTY)),
+              ORIGIN, RACE, pop2007 = as.numeric(POPESTIMATE2007))
+
+  race07 <- d07 %>% filter(ORIGIN == "0") %>% select(fips, RACE, pop2007) %>%
+    pivot_wider(names_from = RACE, values_from = pop2007, names_prefix = "race_")
+  hisp07 <- d07 %>% filter(RACE == "0") %>% select(fips, ORIGIN, pop2007) %>%
+    pivot_wider(names_from = ORIGIN, values_from = pop2007, names_prefix = "origin_")
+
+  # RACE codes: 0=total, 1=White, 2=Black, 3=AIAN, 4=Asian, 5=NHPI, 6=Two-or-more (all "alone", any origin)
+  race_2007 <- race07 %>% left_join(hisp07, by = "fips") %>%
+    transmute(fips, total_2007 = race_0,
+      white_share_2007 = 100 * race_1 / race_0, black_share_2007 = 100 * race_2 / race_0,
+      aian_share_2007 = 100 * race_3 / race_0, asian_share_2007 = 100 * race_4 / race_0,
+      nhpi_share_2007 = 100 * race_5 / race_0, tom_share_2007 = 100 * race_6 / race_0,
+      hispanic_share_2007 = 100 * origin_2 / race_0)
+  saveRDS(race_2007, race_2007_path)
+}
+cat("2007 race table:", nrow(race_2007), "counties (full PEP coverage, no ACS threshold)\n")
+```
+
+```{r race-2019, cache=TRUE}
+race_2019_path <- "raw_data/optionc_race_2019.rds"
+if (file.exists(race_2019_path)) {
+  race_2019 <- readRDS(race_2019_path)
+} else {
+  alldata_path <- "raw_data/cc-est2019-alldata.csv"
+  if (!file.exists(alldata_path)) {
+    GET("https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/counties/asrh/cc-est2019-alldata.csv",
+        add_headers(`User-Agent` = "Mozilla/5.0"), write_disk(alldata_path, overwrite = TRUE), timeout(300))
+  }
+  d19 <- read_csv(alldata_path, show_col_types = FALSE, col_types = cols(.default = "c")) %>%
+    filter(SUMLEV == "050", YEAR == "12", AGEGRP == "0") %>%
+    transmute(fips = paste0(sprintf("%02s", STATE), sprintf("%03s", COUNTY)),
+      total_2019 = as.numeric(TOT_POP),
+      white = as.numeric(WA_MALE) + as.numeric(WA_FEMALE), black = as.numeric(BA_MALE) + as.numeric(BA_FEMALE),
+      aian = as.numeric(IA_MALE) + as.numeric(IA_FEMALE), asian = as.numeric(AA_MALE) + as.numeric(AA_FEMALE),
+      nhpi = as.numeric(`NA_MALE`) + as.numeric(`NA_FEMALE`), tom = as.numeric(TOM_MALE) + as.numeric(TOM_FEMALE),
+      hisp = as.numeric(H_MALE) + as.numeric(H_FEMALE))
+
+  race_2019 <- d19 %>% transmute(fips, total_2019,
+    white_share_2019 = 100*white/total_2019, black_share_2019 = 100*black/total_2019,
+    aian_share_2019 = 100*aian/total_2019, asian_share_2019 = 100*asian/total_2019,
+    nhpi_share_2019 = 100*nhpi/total_2019, tom_share_2019 = 100*tom/total_2019,
+    hispanic_share_2019 = 100*hisp/total_2019)
+  saveRDS(race_2019, race_2019_path)
+}
+cat("2019 race table:", nrow(race_2019), "counties (full PEP coverage)\n")
+```
+
+Race studied bucket: `white_share` dropped as the reference category (shares
+sum to 100 by construction, so all six can't enter a regression together).
+AIAN + NHPI + TOM collapsed into a single `other_race_share` -- individually
+these are frequently near-zero, noisy county-level shares. Final bucket:
+`black_share`, `hispanic_share`, `asian_share`, `other_race_share`.
+
+## 2. New predictor: EDUCATION (ACS)
+
+2005-2007 3-year for the 2008 crisis, 2015-2019 5-year for COVID. Bachelor's
+degree or higher, population 25+.
+
+- **2005-2007 (acs3)**: table **B15002** ("Sex by Educational Attainment"),
+  not B15003 -- confirmed live, B15003 returns HTTP 404 against the 2007
+  acs3 endpoint (it didn't exist as a table until the 2008 vintage; same
+  reason the existing 1-year 2007 pull in `pipeline/13_acs_education.R`
+  uses B15002). Bachelor's-plus = male cells 015-018 + female cells 032-035.
+  **ACS 3-year publishes only for geographies with population >= 20,000** --
+  counties below that threshold are absent from the API response entirely
+  (not an error, not a 0) -- this is the sample-size-limiting step for this
+  entire Option.
+- **2015-2019 (acs5)**: table **B15003** (confirmed present, same cell
+  layout as the existing 1-year 2019 pull: total = cell 001, bachelor's-plus
+  = cells 022-025). ACS 5-year has full county coverage, no threshold.
+
+```{r education-2007, cache=TRUE}
+edu_2007_path <- "raw_data/optionc_education_2007.rds"
+if (file.exists(edu_2007_path)) {
+  edu_2007 <- readRDS(edu_2007_path)
+} else {
+  acs_get <- function(base, vars, geo) {
+    url <- paste0(base, "?get=NAME,", paste(vars, collapse = ","), "&", geo, "&key=", census_key)
+    raw <- fromJSON(url)
+    d <- as_tibble(raw[-1, , drop = FALSE], .name_repair = "minimal")
+    names(d) <- raw[1, ]
+    d
+  }
+  male_ba <- paste0("B15002_0", 15:18, "E"); female_ba <- paste0("B15002_0", 32:35, "E")
+  vars07 <- c("B15002_001E", male_ba, female_ba)
+  edu07_raw <- acs_get("https://api.census.gov/data/2007/acs/acs3", vars07, "for=county:*&in=state:*")
+
+  edu_2007 <- edu07_raw %>%
+    mutate(across(all_of(vars07), as.numeric)) %>%
+    rowwise() %>%
+    mutate(ba_plus = sum(c_across(all_of(c(male_ba, female_ba))), na.rm = TRUE)) %>%
+    ungroup() %>%
+    filter(state != "72") %>%
+    transmute(fips = paste0(state, county), bachelors_share_2007 = 100 * ba_plus / B15002_001E)
+  saveRDS(edu_2007, edu_2007_path)
+}
+cat("2007 education (ACS3 2005-2007, 20k+ threshold, post-PR):", nrow(edu_2007), "counties\n")
+```
+
+```{r education-2019, cache=TRUE}
+edu_2019_path <- "raw_data/optionc_education_2019.rds"
+if (file.exists(edu_2019_path)) {
+  edu_2019 <- readRDS(edu_2019_path)
+} else {
+  acs_get <- function(base, vars, geo) {
+    url <- paste0(base, "?get=NAME,", paste(vars, collapse = ","), "&", geo, "&key=", census_key)
+    raw <- fromJSON(url)
+    d <- as_tibble(raw[-1, , drop = FALSE], .name_repair = "minimal")
+    names(d) <- raw[1, ]
+    d
+  }
+  ba_2019 <- paste0("B15003_0", 22:25, "E")
+  vars19 <- c("B15003_001E", ba_2019)
+  edu19_raw <- acs_get("https://api.census.gov/data/2019/acs/acs5", vars19, "for=county:*&in=state:*")
+
+  edu_2019 <- edu19_raw %>%
+    mutate(across(all_of(vars19), as.numeric)) %>%
+    rowwise() %>%
+    mutate(ba_plus = sum(c_across(all_of(ba_2019)), na.rm = TRUE)) %>%
+    ungroup() %>%
+    filter(state != "72") %>%
+    transmute(fips = paste0(state, county), bachelors_share_2019 = 100 * ba_plus / B15003_001E)
+  saveRDS(edu_2019, edu_2019_path)
+}
+cat("2019 education (ACS5 2015-2019, full coverage, post-PR):", nrow(edu_2019), "counties\n")
+```
+
+## 3. New predictor: INDUSTRY MIX (ACS table C24030, resident-based)
+
+**Resident-based, not establishment-based.** This is "sex by industry for the
+civilian employed population 16+, by place of **residence**" -- Option B's
+industry variable (`pipeline/20_cbp_industry_mix.R`) used County Business
+Patterns instead, which counts jobs by **establishment location**. A county
+that's mostly bedroom-community (workers commute out) looks very different
+under the two definitions -- this matters for interpretation, not just
+sourcing.
+
+**Sector mapping verified, not assumed.** Checked both vintages' variable
+lists against the Census API's own `/groups/C24030.json` before building any
+share:
+
+```{r industry-mapping-check, cache=TRUE}
+get_group_vars <- function(url) {
+  raw <- fromJSON(url)
+  vars <- raw$variables
+  tibble(code = names(vars), label = sapply(vars, function(v) v$label)) %>%
+    filter(grepl("E$", code), !grepl("EA$", code)) %>% arrange(code)
+}
+v2007 <- get_group_vars("https://api.census.gov/data/2007/acs/acs3/groups/C24030.json")
+v2019 <- get_group_vars("https://api.census.gov/data/2019/acs/acs5/groups/C24030.json")
+cat("2007 acs3 C24030 variable count:", nrow(v2007), " | 2019 acs5:", nrow(v2019), "\n")
+cat("Same variable codes present in both vintages:", setequal(v2007$code, v2019$code), "\n")
+```
+
+**Result: identical variable-code structure in both vintages** (same 56
+codes, code-for-code) -- code `001E` = total, `002E`-`028E` = Male (27
+cells), `029E`-`055E` = Female (27 cells, exact +27 offset of the male
+block). Label wording shifts slightly between vintages (e.g. 2007's "Mining"
+becomes 2019's "Mining, quarrying, and oil and gas extraction" -- a
+terminology update, not a category change), but the category composition
+and cell numbering are unchanged. **No sector failed to map** -- unlike CBP's
+NAICS2002-vs-NAICS2017 vintage break (Option B's problem), C24030 is
+designed as a stable industry-supersector table across ACS vintages.
+
+Collapsed to **13 MECE top-level sectors** (the direct children of the
+Male/Female total, skipping the more-detailed nested sub-splits so shares
+sum cleanly to 100 with no double-counting):
+
+```{r industry-sector-lookup}
+sector_lookup <- tibble(
+  sector = c("agriculture_mining","construction","manufacturing","wholesale_trade","retail_trade",
+             "transportation_utilities","information","finance_real_estate","professional_admin",
+             "education_health","arts_accommodation","other_services","public_administration"),
+  male_code = c(3,6,7,8,9,10,13,14,17,21,24,27,28),
+  female_code = c(3,6,7,8,9,10,13,14,17,21,24,27,28) + 27
+)
+sector_lookup
+```
+
+```{r industry-2007, cache=TRUE}
+ind_2007_path <- "raw_data/optionc_industry_2007.rds"
+if (file.exists(ind_2007_path)) {
+  ind_2007 <- readRDS(ind_2007_path)
+} else {
+  acs_get <- function(base, vars, geo) {
+    url <- paste0(base, "?get=NAME,", paste(vars, collapse = ","), "&", geo, "&key=", census_key)
+    raw <- fromJSON(url)
+    d <- as_tibble(raw[-1, , drop = FALSE], .name_repair = "minimal")
+    names(d) <- raw[1, ]
+    d
+  }
+  all_codes <- c(1, sector_lookup$male_code, sector_lookup$female_code)
+  vars <- paste0("C24030_", sprintf("%03d", all_codes), "E")
+  ind07_raw <- acs_get("https://api.census.gov/data/2007/acs/acs3", vars, "for=county:*&in=state:*")
+
+  build_shares <- function(raw, suffix) {
+    raw <- raw %>% mutate(across(all_of(vars), as.numeric)) %>% filter(state != "72")
+    out <- tibble(fips = paste0(raw$state, raw$county))
+    total <- raw[["C24030_001E"]]
+    for (i in seq_len(nrow(sector_lookup))) {
+      mcol <- paste0("C24030_", sprintf("%03d", sector_lookup$male_code[i]), "E")
+      fcol <- paste0("C24030_", sprintf("%03d", sector_lookup$female_code[i]), "E")
+      out[[paste0(sector_lookup$sector[i], "_share_", suffix)]] <- 100 * (raw[[mcol]] + raw[[fcol]]) / total
+    }
+    out
+  }
+  ind_2007 <- build_shares(ind07_raw, "2007")
+  saveRDS(ind_2007, ind_2007_path)
+}
+cat("2007 industry (ACS3 2005-2007, 20k+ threshold):", nrow(ind_2007), "counties\n")
+```
+
+```{r industry-2019, cache=TRUE}
+ind_2019_path <- "raw_data/optionc_industry_2019.rds"
+if (file.exists(ind_2019_path)) {
+  ind_2019 <- readRDS(ind_2019_path)
+} else {
+  acs_get <- function(base, vars, geo) {
+    url <- paste0(base, "?get=NAME,", paste(vars, collapse = ","), "&", geo, "&key=", census_key)
+    raw <- fromJSON(url)
+    d <- as_tibble(raw[-1, , drop = FALSE], .name_repair = "minimal")
+    names(d) <- raw[1, ]
+    d
+  }
+  all_codes <- c(1, sector_lookup$male_code, sector_lookup$female_code)
+  vars <- paste0("C24030_", sprintf("%03d", all_codes), "E")
+  ind19_raw <- acs_get("https://api.census.gov/data/2019/acs/acs5", vars, "for=county:*&in=state:*")
+
+  build_shares <- function(raw, suffix) {
+    raw <- raw %>% mutate(across(all_of(vars), as.numeric)) %>% filter(state != "72")
+    out <- tibble(fips = paste0(raw$state, raw$county))
+    total <- raw[["C24030_001E"]]
+    for (i in seq_len(nrow(sector_lookup))) {
+      mcol <- paste0("C24030_", sprintf("%03d", sector_lookup$male_code[i]), "E")
+      fcol <- paste0("C24030_", sprintf("%03d", sector_lookup$female_code[i]), "E")
+      out[[paste0(sector_lookup$sector[i], "_share_", suffix)]] <- 100 * (raw[[mcol]] + raw[[fcol]]) / total
+    }
+    out
+  }
+  ind_2019 <- build_shares(ind19_raw, "2019")
+  saveRDS(ind_2019, ind_2019_path)
+}
+cat("2019 industry (ACS5 2015-2019, full coverage):", nrow(ind_2019), "counties\n")
+```
+
+Industry studied bucket: 13 shares sum to 100, so one must drop as reference
+-- **`public_administration_share` dropped** (least tied to private-sector
+business-cycle dynamics, a reasonable stable baseline). Final bucket: the
+other 12 sector shares.
+
+## 4. Assemble spine_data_optionc.csv
+
+Read-only on `spine_data.csv` (Option A's file) and on every Option A
+artifact. Output is a brand-new file, `spine_data_optionc.csv`, in the
+project root.
+
+```{r assemble-spine}
+spine_optionc_path <- "spine_data_optionc.csv"
+if (file.exists(spine_optionc_path)) {
+  spine_optionc <- read_csv(spine_optionc_path, show_col_types = FALSE)
+} else {
+  county <- read_csv("spine_data.csv", show_col_types = FALSE)  # Option A's file -- read-only
+
+  race_2007_bucket <- race_2007 %>% transmute(fips,
+    black_share_2007, hispanic_share_2007, asian_share_2007,
+    other_race_share_2007 = aian_share_2007 + nhpi_share_2007 + tom_share_2007)
+  race_2019_bucket <- race_2019 %>% transmute(fips,
+    black_share_2019, hispanic_share_2019, asian_share_2019,
+    other_race_share_2019 = aian_share_2019 + nhpi_share_2019 + tom_share_2019)
+
+  # NB: select(-col), not select(fips, -col) -- the latter keeps ONLY fips
+  ind_2007_bucket <- ind_2007 %>% select(-public_administration_share_2007)
+  ind_2019_bucket <- ind_2019 %>% select(-public_administration_share_2019)
+
+  spine_optionc <- county %>%
+    left_join(race_2007_bucket, by = "fips") %>%
+    left_join(race_2019_bucket, by = "fips") %>%
+    left_join(edu_2007, by = "fips") %>%
+    left_join(edu_2019, by = "fips") %>%
+    left_join(ind_2007_bucket, by = "fips") %>%
+    left_join(ind_2019_bucket, by = "fips")
+
+  write_csv(spine_optionc, spine_optionc_path)
+}
+cat("spine_data_optionc.csv:", nrow(spine_optionc), "rows,", ncol(spine_optionc), "cols\n")
+```
+
+## 5. Sample: intersection of complete cases across both crises
+
+```{r sample-intersection}
+# public_administration was dropped as the reference category when the spine
+# was assembled (Section 4) -- only the other 12 sectors actually exist as
+# columns in spine_optionc, so this list must match that, not sector_lookup's
+# full 13.
+industry_sectors <- setdiff(sector_lookup$sector, "public_administration")
+
+crisis_cols <- list(
+  "2008" = c(outcome = "recovery_ratio_2008",
+             proprietor_share = "proprietor_share_2007", migration_rate = "net_migration_rate_2007",
+             unemployment_rate = "pre_unemployment_2007", working_age_share = "working_age_share_2007",
+             income = "median_hh_income_2007", poverty_rate = "poverty_rate_2007",
+             population = "total_population_2007", density = "population_density_2007",
+             rucc = "rucc_2003_2007", pop_trend = "pop_trend_2007",
+             black_share = "black_share_2007", hispanic_share = "hispanic_share_2007",
+             asian_share = "asian_share_2007", other_race_share = "other_race_share_2007",
+             bachelors_share = "bachelors_share_2007"),
+  "covid" = c(outcome = "recovery_ratio_covid",
+              proprietor_share = "proprietor_share_2019", migration_rate = "net_migration_rate_2019",
+              unemployment_rate = "pre_unemployment_2019", working_age_share = "working_age_share_2019",
+              income = "median_hh_income_2019", poverty_rate = "poverty_rate_2019",
+              population = "total_population_2019", density = "population_density_2019",
+              rucc = "rucc_2013_2019", pop_trend = "pop_trend_2019",
+              black_share = "black_share_2019", hispanic_share = "hispanic_share_2019",
+              asian_share = "asian_share_2019", other_race_share = "other_race_share_2019",
+              bachelors_share = "bachelors_share_2019")
+)
+
+req_cols_for <- function(crisis) {
+  suffix <- if (crisis == "2008") "2007" else "2019"
+  c(unname(crisis_cols[[crisis]]), paste0(industry_sectors, "_share_", suffix))
+}
+
+# NA count per required column -- identifies which predictor drives sample loss
+na_report_2008 <- sapply(req_cols_for("2008"), function(cl) sum(is.na(spine_optionc[[cl]])))
+na_report_covid <- sapply(req_cols_for("covid"), function(cl) sum(is.na(spine_optionc[[cl]])))
+cat("=== 2008: top NA-count columns ===\n"); print(sort(na_report_2008, decreasing = TRUE)[1:6])
+cat("\n=== COVID: top NA-count columns ===\n"); print(sort(na_report_covid, decreasing = TRUE)[1:6])
+
+complete_fips <- function(crisis) {
+  cols <- req_cols_for(crisis)
+  spine_optionc %>% filter(if_all(all_of(cols), ~ !is.na(.))) %>% pull(fips)
+}
+fips_2008 <- complete_fips("2008")
+fips_covid <- complete_fips("covid")
+fips_final <- intersect(fips_2008, fips_covid)
+
+cat("\nComplete cases, 2008-side predictors:", length(fips_2008), "\n")
+cat("Complete cases, COVID-side predictors:", length(fips_covid), "\n")
+cat("INTERSECTION (final Option C sample, used for both crises):", length(fips_final), "\n")
+cat("2008-complete counties dropped by intersection:", length(setdiff(fips_2008, fips_final)), "\n")
+cat("COVID-complete counties dropped by intersection:", length(setdiff(fips_covid, fips_final)), "\n")
+
+saveRDS(fips_final, "raw_data/optionc_final_fips.rds")
+```
+
+**The ACS 2005-2007 3-year 20,000+ population threshold is the dominant
+driver of sample loss** -- `bachelors_share_2007` and all 12
+`*_share_2007` industry columns are simultaneously NA for the same ~1,400+
+counties (every county below the threshold, at once), dwarfing the
+pre-existing Option A missingness (~90-150 per column) in the original 4
+predictors/controls. The COVID side barely constrains anything (ACS5 has
+full coverage) -- every 2008-complete county is also COVID-complete, so the
+intersection equals the 2008-side count exactly.
+
+## 6. Diagnostics on the 3 new predictor buckets
+
+```{r diagnostics-distributions}
+d_diag <- spine_optionc %>% filter(fips %in% fips_final)
+new_2007 <- c("black_share_2007","hispanic_share_2007","asian_share_2007","other_race_share_2007",
+  "bachelors_share_2007", paste0(industry_sectors[industry_sectors != "public_administration"], "_share_2007"))
+
+dist_table <- t(sapply(new_2007, function(v) {
+  x <- d_diag[[v]]
+  c(mean = mean(x, na.rm=TRUE), sd = sd(x, na.rm=TRUE), min = min(x, na.rm=TRUE),
+    median = median(x, na.rm=TRUE), max = max(x, na.rm=TRUE), n_na = sum(is.na(x)))
+}))
+round(dist_table, 2)
+```
+
+```{r diagnostics-correlations}
+d_diag <- d_diag %>% mutate(log_population_2007 = log(total_population_2007),
+                             log_density_2007 = log(population_density_2007))
+existing_cols <- c("proprietor_share_2007","net_migration_rate_2007","pre_unemployment_2007",
+  "working_age_share_2007","median_hh_income_2007","poverty_rate_2007","log_population_2007",
+  "log_density_2007","pop_trend_2007")
+
+cor_mat <- cor(d_diag[new_2007], d_diag[existing_cols], use = "complete.obs")
+flagged <- which(abs(cor_mat) > 0.6, arr.ind = TRUE)
+cat("=== |r| > 0.6 (new predictor vs. existing predictor/control) ===\n")
+for (i in seq_len(nrow(flagged))) {
+  r <- flagged[i,1]; cc <- flagged[i,2]
+  cat(sprintf("%-32s vs %-25s : r = %.3f\n", new_2007[r], existing_cols[cc], cor_mat[r,cc]))
+}
+```
+
+**Flagged: `bachelors_share` vs `income` (r=0.68)** -- exactly the pairing
+the task anticipated. `professional_admin_share` also correlates with income
+(0.65) and log(population) (0.64) -- professional/administrative jobs
+concentrate in wealthier, denser counties, unsurprisingly. Nothing else
+clears 0.6; the rest of the industry/race shares are only weakly correlated
+with the existing predictor/control set.
+
+## 7. Prepare crisis-specific data (same ~1,766-county sample, both crises)
+
+```{r prepare-crisis-data}
+prepare_crisis_data_optionc <- function(raw, crisis, fips_keep) {
+  cols <- crisis_cols[[crisis]]
+  suffix <- if (crisis == "2008") "2007" else "2019"
+  industry_src_cols <- paste0(industry_sectors, "_share_", suffix)
+
+  base <- raw %>%
+    filter(fips %in% fips_keep) %>%
+    transmute(
+      fips, county_name,
+      outcome_raw = .data[[cols[["outcome"]]]],
+      proprietor_share = .data[[cols[["proprietor_share"]]]],
+      migration_rate = .data[[cols[["migration_rate"]]]],
+      unemployment_rate = .data[[cols[["unemployment_rate"]]]],
+      working_age_share = .data[[cols[["working_age_share"]]]],
+      income = .data[[cols[["income"]]]], poverty_rate = .data[[cols[["poverty_rate"]]]],
+      population = .data[[cols[["population"]]]], density = .data[[cols[["density"]]]],
+      rucc_raw = .data[[cols[["rucc"]]]], pop_trend = .data[[cols[["pop_trend"]]]],
+      black_share = .data[[cols[["black_share"]]]], hispanic_share = .data[[cols[["hispanic_share"]]]],
+      asian_share = .data[[cols[["asian_share"]]]], other_race_share = .data[[cols[["other_race_share"]]]],
+      bachelors_share = .data[[cols[["bachelors_share"]]]]
+    )
+
+  industry_raw <- raw %>% filter(fips %in% fips_keep) %>% select(fips, all_of(industry_src_cols))
+  names(industry_raw) <- c("fips", industry_sectors)
+
+  df <- base %>% left_join(industry_raw, by = "fips") %>%
+    mutate(
+      log_outcome = log(outcome_raw), log_population = log(population), log_density = log(density),
+      rucc = relevel(factor(rucc_raw), ref = "1"),
+      proprietor_share_z = as.numeric(scale(proprietor_share)),
+      migration_rate_z = as.numeric(scale(migration_rate)),
+      unemployment_rate_z = as.numeric(scale(unemployment_rate)),
+      working_age_share_z = as.numeric(scale(working_age_share)),
+      black_share_z = as.numeric(scale(black_share)), hispanic_share_z = as.numeric(scale(hispanic_share)),
+      asian_share_z = as.numeric(scale(asian_share)), other_race_share_z = as.numeric(scale(other_race_share)),
+      bachelors_share_z = as.numeric(scale(bachelors_share))
+    )
+  for (s in industry_sectors) df[[paste0(s, "_z")]] <- as.numeric(scale(df[[s]]))
+  df
+}
+
+df_2008 <- prepare_crisis_data_optionc(spine_optionc, "2008", fips_final)
+df_covid <- prepare_crisis_data_optionc(spine_optionc, "covid", fips_final)
+cat("df_2008:", nrow(df_2008), "| df_covid:", nrow(df_covid),
+    "| identical fips sets:", setequal(df_2008$fips, df_covid$fips), "\n")
+```
+
+## 8. Model set -- FULL (21 studied predictors) and 4-PREDICTOR-ONLY, same sample
+
+Two predictor sets, both run through the complete Option A model suite (OLS
+HC1, LASSO with `penalty.factor=0` on controls, relaxed LASSO, RF with/
+without wealth, wealth-band OLS), on the **identical** ~1,766-county sample
+-- the 4-predictor-only rerun isolates whether any change from Option A is
+driven by the new predictors or just by the smaller sample.
+
+```{r run-crisis-models-optionc}
+studied_4 <- c("proprietor_share_z","migration_rate_z","unemployment_rate_z","working_age_share_z")
+studied_new <- c("black_share_z","hispanic_share_z","asian_share_z","other_race_share_z",
+                  "bachelors_share_z", paste0(industry_sectors, "_z"))
+studied_full <- c(studied_4, studied_new)
+
+controls <- c("income","poverty_rate","log_population","log_density","rucc","pop_trend")
+controls_no_wealth <- setdiff(controls, c("income","poverty_rate"))
+
+run_crisis_models_optionc <- function(df, studied, seed = 20260729) {
+  ols_formula <- as.formula(paste("log_outcome ~", paste(c(studied, controls), collapse = " + ")))
+  ols <- lm_robust(ols_formula, data = df, se_type = "HC1")
+
+  X <- model.matrix(as.formula(paste("~", paste(c(studied, controls), collapse = " + "))), data = df)[, -1]
+  y <- df$log_outcome
+  penalty <- ifelse(colnames(X) %in% studied, 1, 0)
+  set.seed(seed)
+  cvfit <- cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty)
+  set.seed(seed)
+  relaxed <- cv.glmnet(X, y, alpha = 1, nfolds = 10, standardize = TRUE, penalty.factor = penalty, relax = TRUE)
+
+  rf_formula_a <- as.formula(paste("log_outcome ~", paste(c(studied, controls), collapse = " + ")))
+  set.seed(seed)
+  rf_a <- randomForest(rf_formula_a, data = df, ntree = 500, importance = FALSE)
+
+  rf_formula_b <- as.formula(paste("log_outcome ~", paste(c(studied, controls_no_wealth), collapse = " + ")))
+  set.seed(seed)
+  rf_b <- randomForest(rf_formula_b, data = df, ntree = 500, importance = TRUE)
+
+  df_banded <- df %>% mutate(income_band = cut(income, breaks = quantile(income, c(0, 1/3, 2/3, 1)),
+                                                include.lowest = TRUE, labels = c("lower","middle","higher")))
+  band_fits <- setNames(lapply(c("lower","middle","higher"), function(b) {
+    lm_robust(ols_formula, data = df_banded %>% filter(income_band == b), se_type = "HC1")
+  }), c("lower","middle","higher"))
+
+  list(n = nrow(df), studied = studied, ols = ols, cvfit = cvfit, relaxed = relaxed,
+       coef_min = as.matrix(coef(cvfit, s = "lambda.min"))[, 1],
+       coef_1se = as.matrix(coef(cvfit, s = "lambda.1se"))[, 1],
+       rf_a = rf_a, rf_b = rf_b, band_fits = band_fits, df_banded = df_banded)
+}
+
+model_cache <- "raw_data/optionc_model_results.rds"
+if (file.exists(model_cache)) {
+  model_results <- readRDS(model_cache)
+} else {
+  message("Fitting FULL (21-predictor) models...")
+  res_2008_full <- run_crisis_models_optionc(df_2008, studied_full)
+  res_covid_full <- run_crisis_models_optionc(df_covid, studied_full)
+  message("Fitting 4-predictor-only models (same sample)...")
+  res_2008_4only <- run_crisis_models_optionc(df_2008, studied_4)
+  res_covid_4only <- run_crisis_models_optionc(df_covid, studied_4)
+  model_results <- list(full = list("2008" = res_2008_full, "covid" = res_covid_full),
+                         four_only = list("2008" = res_2008_4only, "covid" = res_covid_4only),
+                         studied_4 = studied_4, studied_full = studied_full)
+  saveRDS(model_results, model_cache)
+}
+```
+
+## 9. Results: education, industry, race -- OLS (full model)
+
+```{r results-ols-new-predictors}
+edu_ind_vars <- c("bachelors_share_z", paste0(industry_sectors[industry_sectors != "public_administration"], "_z"))
+race_vars <- c("black_share_z","hispanic_share_z","asian_share_z","other_race_share_z")
+
+show_ols <- function(fit, vars) {
+  s <- summary(fit)$coefficients
+  round(s[rownames(s) %in% vars, c("Estimate","Std. Error","Pr(>|t|)"), drop = FALSE], 4)
+}
+cat("--- 2008: education, industry, race ---\n")
+show_ols(model_results$full[["2008"]]$ols, c(edu_ind_vars, race_vars))
+cat("\n--- COVID: education, industry, race ---\n")
+show_ols(model_results$full[["covid"]]$ols, c(edu_ind_vars, race_vars))
+```
+
+## 10. Results: original 4 predictors -- Option A vs. Option C (4-only) vs. Option C (full)
+
+```{r results-original-4-comparison}
+optionA <- readRDS("raw_data/modeling_andrew_results.rds")  # Option A's cache -- read-only
+
+get_ols4 <- function(fit) {
+  s <- summary(fit)$coefficients[studied_4, c("Estimate","Std. Error","Pr(>|t|)"), drop = FALSE]
+  round(s, 5)
+}
+cat("=== OPTION A (original spine, n=", optionA[["2008"]]$n, "/", optionA[["covid"]]$n, ") ===\n")
+cat("-- 2008 --\n"); print(get_ols4(optionA[["2008"]]$ols))
+cat("-- COVID --\n"); print(get_ols4(optionA[["covid"]]$ols))
+
+cat("\n=== OPTION C, 4-predictor-only, same n=", model_results$four_only[["2008"]]$n, "sample ===\n")
+cat("-- 2008 --\n"); print(get_ols4(model_results$four_only[["2008"]]$ols))
+cat("-- COVID --\n"); print(get_ols4(model_results$four_only[["covid"]]$ols))
+
+cat("\n=== OPTION C, FULL 21-predictor model, same sample ===\n")
+cat("-- 2008 --\n"); print(get_ols4(model_results$full[["2008"]]$ols))
+cat("-- COVID --\n"); print(get_ols4(model_results$full[["covid"]]$ols))
+```
+
+## 11. Results: wealth bands (full model)
+
+```{r results-wealth-bands}
+band_n <- function(r) sapply(r$band_fits, function(f) f$nobs)
+cat("Band n, 2008:", band_n(model_results$full[["2008"]]), " | COVID:", band_n(model_results$full[["covid"]]), "\n\n")
+
+show_bands <- function(r, label) {
+  cat("---", label, "---\n")
+  for (b in c("lower","middle","higher")) {
+    s <- summary(r$band_fits[[b]])$coefficients[studied_4, c("Estimate","Pr(>|t|)"), drop = FALSE]
+    cat(" band:", b, "n =", r$band_fits[[b]]$nobs, "\n")
+    print(round(s, 4))
+  }
+}
+show_bands(model_results$full[["2008"]], "2008 FULL -- wealth bands")
+show_bands(model_results$full[["covid"]], "COVID FULL -- wealth bands")
+```
+
+## 12. LASSO survival check (education/industry/race, full model, lambda.min)
+
+```{r results-lasso-survival}
+for (crisis in c("2008","covid")) {
+  cat("===", crisis, "===\n")
+  cm <- model_results$full[[crisis]]$coef_min[c(edu_ind_vars, race_vars)]
+  cat("Nonzero:\n"); print(round(cm[cm != 0], 5))
+  cat("Zeroed out:", paste(names(cm[cm == 0]), collapse = ", "), "\n\n")
+}
+```
+
+# Verification-pass fixes
+
+Two problems surfaced in a verification pass before A/C synthesis: (1) the 4
+original predictors were standardized on Option C's own (smaller) sample,
+not Option A's, so standardized coefficients from A and C were not on the
+same scale; (2) RUCC 8 and 9 had only 12-22 counties each in the Option C
+sample (from the ACS 20k+ threshold gutting the most-rural categories).
+Sections 13+ below fix both, add the one missing correlation number, and run
+a cross-crisis prediction test. Nothing above is modified -- these are new,
+additive sections. New fits below save to `raw_data/optionc_*_v2.rds` and
+`raw_data/crosscrisis_*.rds` only; Option A's four protected `.rds` files are
+read-only everywhere they're referenced.
+
+## 13. Fix 1 + Fix 2: rescale to Option A, collapse RUCC 8/9
+
+```{r fix-prep-data}
+# Option A's full-sample mean/SD for the 4 original predictors, per crisis --
+# the scale the 4 original predictors will be standardized on everywhere
+# below, so Option A and Option C coefficients are directly comparable.
+raw_vars <- c(proprietor_share_z = "proprietor_share", migration_rate_z = "migration_rate",
+              unemployment_rate_z = "unemployment_rate", working_age_share_z = "working_age_share")
+optionA_scale <- list(
+  "2008" = sapply(raw_vars, function(v) c(mean = mean(optionA[["2008"]]$df[[v]]), sd = sd(optionA[["2008"]]$df[[v]]))),
+  "covid" = sapply(raw_vars, function(v) c(mean = mean(optionA[["covid"]]$df[[v]]), sd = sd(optionA[["covid"]]$df[[v]])))
+)
+
+prepare_crisis_data_v2 <- function(raw, crisis, fips_keep) {
+  cols <- crisis_cols[[crisis]]
+  suffix <- if (crisis == "2008") "2007" else "2019"
+  industry_src_cols <- paste0(industry_sectors, "_share_", suffix)
+
+  base <- raw %>%
+    filter(fips %in% fips_keep) %>%
+    transmute(
+      fips, county_name,
+      outcome_raw = .data[[cols[["outcome"]]]],
+      proprietor_share = .data[[cols[["proprietor_share"]]]],
+      migration_rate = .data[[cols[["migration_rate"]]]],
+      unemployment_rate = .data[[cols[["unemployment_rate"]]]],
+      working_age_share = .data[[cols[["working_age_share"]]]],
+      income = .data[[cols[["income"]]]], poverty_rate = .data[[cols[["poverty_rate"]]]],
+      population = .data[[cols[["population"]]]], density = .data[[cols[["density"]]]],
+      rucc_raw = .data[[cols[["rucc"]]]], pop_trend = .data[[cols[["pop_trend"]]]],
+      black_share = .data[[cols[["black_share"]]]], hispanic_share = .data[[cols[["hispanic_share"]]]],
+      asian_share = .data[[cols[["asian_share"]]]], other_race_share = .data[[cols[["other_race_share"]]]],
+      bachelors_share = .data[[cols[["bachelors_share"]]]]
+    )
+
+  industry_raw <- raw %>% filter(fips %in% fips_keep) %>% select(fips, all_of(industry_src_cols))
+  names(industry_raw) <- c("fips", industry_sectors)
+
+  scaleA <- optionA_scale[[crisis]]
+  df <- base %>% left_join(industry_raw, by = "fips") %>%
+    mutate(
+      log_outcome = log(outcome_raw), log_population = log(population), log_density = log(density),
+      # Fix 2: RUCC 8 and 9 collapsed into one level (12/13 and 22/13 counties
+      # respectively -- too thin on their own)
+      rucc_collapsed = ifelse(rucc_raw %in% c(8, 9), "8_9", as.character(rucc_raw)),
+      rucc = relevel(factor(rucc_collapsed), ref = "1"),
+      # Fix 1: 4 original predictors standardized on OPTION A's full-sample
+      # mean/SD, not Option C's own -- makes coefficients directly comparable
+      proprietor_share_z = (proprietor_share - scaleA["mean","proprietor_share_z"]) / scaleA["sd","proprietor_share_z"],
+      migration_rate_z = (migration_rate - scaleA["mean","migration_rate_z"]) / scaleA["sd","migration_rate_z"],
+      unemployment_rate_z = (unemployment_rate - scaleA["mean","unemployment_rate_z"]) / scaleA["sd","unemployment_rate_z"],
+      working_age_share_z = (working_age_share - scaleA["mean","working_age_share_z"]) / scaleA["sd","working_age_share_z"],
+      # new predictors have no Option A equivalent -- standardized on Option C's own sample
+      black_share_z = as.numeric(scale(black_share)), hispanic_share_z = as.numeric(scale(hispanic_share)),
+      asian_share_z = as.numeric(scale(asian_share)), other_race_share_z = as.numeric(scale(other_race_share)),
+      bachelors_share_z = as.numeric(scale(bachelors_share))
+    )
+  for (s in industry_sectors) df[[paste0(s, "_z")]] <- as.numeric(scale(df[[s]]))
+  df
+}
+
+prep_v2_cache <- "raw_data/optionc_prepared_data_v2.rds"
+if (file.exists(prep_v2_cache)) {
+  prep_v2 <- readRDS(prep_v2_cache)
+} else {
+  df_2008_v2 <- prepare_crisis_data_v2(spine_optionc, "2008", fips_final)
+  df_covid_v2 <- prepare_crisis_data_v2(spine_optionc, "covid", fips_final)
+  prep_v2 <- list(df_2008 = df_2008_v2, df_covid = df_covid_v2, industry_sectors = industry_sectors,
+                   optionA_scale = optionA_scale)
+  saveRDS(prep_v2, prep_v2_cache)
+}
+cat("RUCC levels, 2008 (post-collapse):\n"); print(table(prep_v2$df_2008$rucc))
+cat("RUCC levels, COVID (post-collapse):\n"); print(table(prep_v2$df_covid$rucc))
+```
+
+## 14. Refit Option C models (4-only and full) on the fixed data
+
+```{r fix-refit-models}
+model_v2_cache <- "raw_data/optionc_model_results_v2.rds"
+if (file.exists(model_v2_cache)) {
+  model_results_v2 <- readRDS(model_v2_cache)
+} else {
+  # penalty.factor rebuilt from colnames(model.matrix()) -- automatically
+  # picks up the reduced RUCC dummy count (7, not 8) after the collapse
+  res_2008_full_v2 <- run_crisis_models_optionc(prep_v2$df_2008, studied_full)
+  res_covid_full_v2 <- run_crisis_models_optionc(prep_v2$df_covid, studied_full)
+  res_2008_4only_v2 <- run_crisis_models_optionc(prep_v2$df_2008, studied_4)
+  res_covid_4only_v2 <- run_crisis_models_optionc(prep_v2$df_covid, studied_4)
+  model_results_v2 <- list(full = list("2008" = res_2008_full_v2, "covid" = res_covid_full_v2),
+                            four_only = list("2008" = res_2008_4only_v2, "covid" = res_covid_4only_v2))
+  saveRDS(model_results_v2, model_v2_cache)
+}
+
+X_check <- model.matrix(as.formula(paste("~", paste(c(studied_4, controls), collapse=" + "))), data = prep_v2$df_2008)
+cat("RUCC dummy columns post-collapse:", sum(grepl("^rucc", colnames(X_check))), "(was 8, now 7)\n")
+```
+
+## 15. Rescaled comparison: Option A vs. Option C (4-only) vs. Option C (full)
+
+```{r fix-comparison-table}
+get4 <- function(fit) round(summary(fit)$coefficients[studied_4, c("Estimate","Std. Error","Pr(>|t|)")], 5)
+
+cat("=== OPTION A ===\n")
+cat("-- 2008 --\n"); print(get4(optionA[["2008"]]$ols))
+cat("-- COVID --\n"); print(get4(optionA[["covid"]]$ols))
+
+cat("\n=== OPTION C v2, 4-only (rescaled to A, RUCC collapsed) ===\n")
+cat("-- 2008 --\n"); print(get4(model_results_v2$four_only[["2008"]]$ols))
+cat("-- COVID --\n"); print(get4(model_results_v2$four_only[["covid"]]$ols))
+
+cat("\n=== OPTION C v2, FULL (rescaled to A, RUCC collapsed) ===\n")
+cat("-- 2008 --\n"); print(get4(model_results_v2$full[["2008"]]$ols))
+cat("-- COVID --\n"); print(get4(model_results_v2$full[["covid"]]$ols))
+```
+
+## 16. Missing number: education vs. the 4 original predictors
+
+```{r fix-education-correlations}
+check_cors <- function(df, label) {
+  cat("===", label, "===\n")
+  for (v in c("proprietor_share","migration_rate","unemployment_rate","working_age_share")) {
+    cat(sprintf("bachelors_share vs %-20s r = %.4f\n", v, cor(df$bachelors_share, df[[v]])))
+  }
+}
+check_cors(prep_v2$df_2008, "2008 (n=1766)")
+check_cors(prep_v2$df_covid, "COVID (n=1766)")
+```
+
+## 17. VIF on the fixed (RUCC-collapsed) full model
+
+```{r fix-vif}
+library(car)
+vif_v2_cache <- "raw_data/optionc_vif_v2.rds"
+if (file.exists(vif_v2_cache)) {
+  vif_v2 <- readRDS(vif_v2_cache)
+} else {
+  fit_formula_full <- as.formula(paste("log_outcome ~", paste(c(studied_full, controls), collapse = " + ")))
+  lm_2008_v2 <- lm(fit_formula_full, data = prep_v2$df_2008)
+  lm_covid_v2 <- lm(fit_formula_full, data = prep_v2$df_covid)
+  get_vif_val <- function(v) if (is.matrix(v)) v[,3]^2 else v
+  vif_v2 <- list(vif_2008 = get_vif_val(vif(lm_2008_v2)), vif_covid = get_vif_val(vif(lm_covid_v2)))
+  saveRDS(vif_v2, vif_v2_cache)
+}
+cat("2008 VIF > 5:\n"); print(round(vif_v2$vif_2008[vif_v2$vif_2008 > 5], 2))
+cat("COVID VIF > 5:\n"); print(round(vif_v2$vif_covid[vif_v2$vif_covid > 5], 2))
+```
+
+## 18. Cross-crisis test: train on one crisis, predict the other
+
+Random forest, 4 original predictors + 6 controls (raw units, not
+standardized -- RF splits are scale-invariant, and raw units sidestep any
+cross-crisis rescaling mismatch), fit on Option A's own data restricted to
+the 3,012-county both-crises intersection (fair comparison: identical
+counties in both directions). New fits only -- saved to
+`raw_data/crosscrisis_rf_results.rds`, Option A's cached fits untouched.
+
+```{r crosscrisis-test}
+crosscrisis_cache <- "raw_data/crosscrisis_rf_results.rds"
+if (file.exists(crosscrisis_cache)) {
+  cc <- readRDS(crosscrisis_cache)
+} else {
+  fips_A_both <- intersect(optionA[["2008"]]$df$fips, optionA[["covid"]]$df$fips)
+  controls_raw <- c("income","poverty_rate","log_population","log_density","rucc","pop_trend")
+  predictors_raw <- c("proprietor_share","migration_rate","unemployment_rate","working_age_share")
+
+  prep_matched <- function(df, fips_keep) {
+    df %>% filter(fips %in% fips_keep) %>%
+      mutate(rucc = factor(as.character(rucc_raw), levels = as.character(1:9)))
+  }
+  df_2008_m <- prep_matched(optionA[["2008"]]$df, fips_A_both)
+  df_covid_m <- prep_matched(optionA[["covid"]]$df, fips_A_both)
+
+  rf_formula <- as.formula(paste("log_outcome ~", paste(c(predictors_raw, controls_raw), collapse = " + ")))
+  set.seed(20260729)
+  rf_train2008 <- randomForest(rf_formula, data = df_2008_m, ntree = 500, importance = FALSE)
+  set.seed(20260729)
+  rf_train_covid <- randomForest(rf_formula, data = df_covid_m, ntree = 500, importance = FALSE)
+
+  r2_rmse <- function(pred, actual) {
+    ss_res <- sum((actual - pred)^2); ss_tot <- sum((actual - mean(actual))^2)
+    c(R2 = 1 - ss_res/ss_tot, RMSE = sqrt(mean((actual - pred)^2)))
+  }
+
+  pred_covid_from_2008 <- predict(rf_train2008, newdata = df_covid_m)
+  cross_2008_to_covid <- r2_rmse(pred_covid_from_2008, df_covid_m$log_outcome)
+  spearman_2008_to_covid <- cor(pred_covid_from_2008, df_covid_m$log_outcome, method = "spearman")
+
+  pred_covid_oob <- predict(rf_train_covid)  # OOB predictions -- honest same-crisis ceiling
+  ceiling_covid <- r2_rmse(pred_covid_oob, df_covid_m$log_outcome)
+  spearman_ceiling_covid <- cor(pred_covid_oob, df_covid_m$log_outcome, method = "spearman")
+
+  pred_2008_from_covid <- predict(rf_train_covid, newdata = df_2008_m)
+  cross_covid_to_2008 <- r2_rmse(pred_2008_from_covid, df_2008_m$log_outcome)
+  spearman_covid_to_2008 <- cor(pred_2008_from_covid, df_2008_m$log_outcome, method = "spearman")
+
+  pred_2008_oob <- predict(rf_train2008)
+  ceiling_2008 <- r2_rmse(pred_2008_oob, df_2008_m$log_outcome)
+  spearman_ceiling_2008 <- cor(pred_2008_oob, df_2008_m$log_outcome, method = "spearman")
+
+  cc <- list(fips_matched = fips_A_both, df_2008_m = df_2008_m, df_covid_m = df_covid_m,
+             rf_train2008 = rf_train2008, rf_train_covid = rf_train_covid,
+             pred_covid_from_2008 = pred_covid_from_2008, pred_2008_from_covid = pred_2008_from_covid,
+             cross_2008_to_covid = cross_2008_to_covid, ceiling_covid = ceiling_covid,
+             cross_covid_to_2008 = cross_covid_to_2008, ceiling_2008 = ceiling_2008,
+             spearman_2008_to_covid = spearman_2008_to_covid, spearman_ceiling_covid = spearman_ceiling_covid,
+             spearman_covid_to_2008 = spearman_covid_to_2008, spearman_ceiling_2008 = spearman_ceiling_2008)
+  saveRDS(cc, crosscrisis_cache)
+}
+
+cat("Matched (both-crises) n:", length(cc$fips_matched), "\n\n")
+cat("Train 2008 -> Predict COVID:  R2 =", round(cc$cross_2008_to_covid["R2"],4),
+    " RMSE =", round(cc$cross_2008_to_covid["RMSE"],4), " Spearman =", round(cc$spearman_2008_to_covid,4), "\n")
+cat("Ceiling (COVID->COVID, OOB):  R2 =", round(cc$ceiling_covid["R2"],4),
+    " RMSE =", round(cc$ceiling_covid["RMSE"],4), " Spearman =", round(cc$spearman_ceiling_covid,4), "\n\n")
+cat("Train COVID -> Predict 2008:  R2 =", round(cc$cross_covid_to_2008["R2"],4),
+    " RMSE =", round(cc$cross_covid_to_2008["RMSE"],4), " Spearman =", round(cc$spearman_covid_to_2008,4), "\n")
+cat("Ceiling (2008->2008, OOB):    R2 =", round(cc$ceiling_2008["R2"],4),
+    " RMSE =", round(cc$ceiling_2008["RMSE"],4), " Spearman =", round(cc$spearman_ceiling_2008,4), "\n")
+```
+
+## 19. Figures (figures_optionc/)
+
+```{r fig-setup-optionc}
+studied_labels_4 <- c(proprietor_share_z = "Self-employment", migration_rate_z = "Migration rate",
+                       unemployment_rate_z = "Unemployment rate", working_age_share_z = "Working-age share")
+pal <- c(blue = "#2a78d6", orange = "#eb6834", aqua = "#1baf7a", yellow = "#eda100")
+theme_pub <- function(base_size = 14) {
+  theme_minimal(base_size = base_size) +
+    theme(panel.grid.minor = element_blank(), panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(color = "#e1e0d9", linewidth = 0.3),
+          strip.text = element_text(face = "bold", size = rel(0.95)), plot.title = element_blank(),
+          legend.position = "bottom", axis.title = element_text(size = rel(0.9)))
+}
+```
+
+### 19a. decomposition.png
+
+```{r fig-decomposition, fig.width=10, fig.height=6}
+get_ci_table_4 <- function(fit, crisis_label, method_label) {
+  s <- summary(fit)$coefficients[studied_4, ]
+  tibble(term = studied_4, estimate = s[,"Estimate"], ci_low = s[,"CI Lower"], ci_high = s[,"CI Upper"],
+         crisis = crisis_label, method = method_label)
+}
+decomp_data <- bind_rows(
+  get_ci_table_4(optionA[["2008"]]$ols, "2008", "Option A"),
+  get_ci_table_4(optionA[["covid"]]$ols, "COVID", "Option A"),
+  get_ci_table_4(model_results_v2$four_only[["2008"]]$ols, "2008", "Option C, 4-only (rescaled)"),
+  get_ci_table_4(model_results_v2$four_only[["covid"]]$ols, "COVID", "Option C, 4-only (rescaled)"),
+  get_ci_table_4(model_results_v2$full[["2008"]]$ols, "2008", "Option C, full (rescaled)"),
+  get_ci_table_4(model_results_v2$full[["covid"]]$ols, "COVID", "Option C, full (rescaled)")
+) %>%
+  mutate(predictor = factor(studied_labels_4[term], levels = rev(studied_labels_4)),
+         method = factor(method, levels = c("Option A", "Option C, 4-only (rescaled)", "Option C, full (rescaled)")))
+
+method_colors <- c("Option A" = unname(pal["blue"]), "Option C, 4-only (rescaled)" = unname(pal["orange"]),
+                    "Option C, full (rescaled)" = unname(pal["aqua"]))
+dodge_w <- 0.6
+p_decomp <- ggplot(decomp_data, aes(x = estimate, y = predictor, color = method, shape = method)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high), width = 0.15, linewidth = 0.6,
+                position = position_dodge(width = dodge_w)) +
+  geom_point(size = 3, position = position_dodge(width = dodge_w)) +
+  scale_color_manual(values = method_colors, name = NULL) +
+  scale_shape_manual(values = c("Option A" = 16, "Option C, 4-only (rescaled)" = 17, "Option C, full (rescaled)" = 15), name = NULL) +
+  facet_wrap(~crisis) +
+  labs(x = "OLS coefficient (log recovery ratio per 1 SD, Option A's SD used throughout), 95% CI", y = NULL) +
+  theme_pub() +
+  guides(color = guide_legend(nrow = 2), shape = guide_legend(nrow = 2))
+ggsave("figures_optionc/decomposition.png", p_decomp, width = 10, height = 6, dpi = 300)
+p_decomp
+```
+
+### 19b. industry_coefficients.png
+
+```{r fig-industry-coefficients, fig.width=10, fig.height=6}
+vars_to_plot <- c("bachelors_share_z", paste0(industry_sectors, "_z"))
+var_labels_ind <- c(
+  bachelors_share_z = "Education (bachelor's+)",
+  agriculture_mining_z = "Agriculture / mining", construction_z = "Construction",
+  manufacturing_z = "Manufacturing", wholesale_trade_z = "Wholesale trade", retail_trade_z = "Retail trade",
+  transportation_utilities_z = "Transportation / utilities", information_z = "Information",
+  finance_real_estate_z = "Finance / real estate", professional_admin_z = "Professional / admin",
+  education_health_z = "Education & health services", arts_accommodation_z = "Arts / accommodation / food",
+  other_services_z = "Other services"
+)
+get_ci_table_ind <- function(fit, crisis_label, vif_vec) {
+  s <- summary(fit)$coefficients[vars_to_plot, ]
+  tibble(term = vars_to_plot, estimate = s[,"Estimate"], ci_low = s[,"CI Lower"], ci_high = s[,"CI Upper"],
+         crisis = crisis_label, vif = vif_vec[vars_to_plot], high_vif = vif_vec[vars_to_plot] > 5)
+}
+ind_data <- bind_rows(
+  get_ci_table_ind(model_results_v2$full[["2008"]]$ols, "2008", vif_v2$vif_2008),
+  get_ci_table_ind(model_results_v2$full[["covid"]]$ols, "COVID", vif_v2$vif_covid)
+) %>% mutate(label = var_labels_ind[term])
+
+order_2008 <- ind_data %>% filter(crisis == "2008") %>% arrange(estimate) %>% pull(label)
+ind_data <- ind_data %>% mutate(label = factor(label, levels = order_2008))
+
+p_ind <- ggplot(ind_data, aes(x = estimate, y = label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_errorbar(aes(xmin = ci_low, xmax = ci_high), width = 0.15, linewidth = 0.6, color = unname(pal["blue"])) +
+  geom_point(aes(shape = high_vif), size = 3, color = unname(pal["blue"]), fill = "white", stroke = 1.1) +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 21), name = NULL,
+                      labels = c("FALSE" = "VIF ≤ 5", "TRUE" = "VIF > 5 (open circle)")) +
+  facet_wrap(~crisis) +
+  labs(x = "OLS coefficient (log recovery ratio per 1 SD), 95% CI -- reference sector: public administration",
+       y = NULL) +
+  theme_pub()
+ggsave("figures_optionc/industry_coefficients.png", p_ind, width = 10, height = 6, dpi = 300)
+p_ind
+```
+
+### 19c. crosscrisis.png
+
+```{r fig-crosscrisis, fig.width=10, fig.height=6}
+cross_data <- bind_rows(
+  tibble(actual = cc$df_covid_m$log_outcome, predicted = cc$pred_covid_from_2008,
+         panel = "Trained on 2008 -> predict COVID"),
+  tibble(actual = cc$df_2008_m$log_outcome, predicted = cc$pred_2008_from_covid,
+         panel = "Trained on COVID -> predict 2008")
+)
+rho_labels <- tibble(
+  panel = c("Trained on 2008 -> predict COVID", "Trained on COVID -> predict 2008"),
+  rho = c(cc$spearman_2008_to_covid, cc$spearman_covid_to_2008)
+) %>% mutate(label = sprintf("Spearman rho = %.3f", rho))
+range_data <- cross_data %>% group_by(panel) %>%
+  summarise(lo = min(c(actual, predicted)), hi = max(c(actual, predicted)), .groups = "drop")
+rho_labels <- rho_labels %>% left_join(range_data, by = "panel")
+
+p_cross <- ggplot(cross_data, aes(x = actual, y = predicted)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#898781", linewidth = 0.5) +
+  geom_point(color = unname(pal["blue"]), alpha = 0.35, size = 1.6) +
+  geom_text(data = rho_labels, aes(x = lo, y = hi, label = label), hjust = 0, vjust = 1.3,
+            inherit.aes = FALSE, size = 4.2) +
+  facet_wrap(~panel, scales = "free") +
+  labs(x = "Actual log(recovery ratio)", y = "Predicted log(recovery ratio) -- RF trained on the other crisis") +
+  theme_pub()
+ggsave("figures_optionc/crosscrisis.png", p_cross, width = 10, height = 6, dpi = 300)
+p_cross
+```
